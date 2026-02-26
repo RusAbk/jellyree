@@ -1,0 +1,123 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  displayName  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  albums Album[]
+  media  Media[]
+  tags   Tag[]
+}
+
+model Album {
+  id          String       @id @default(cuid())
+  name        String
+  description String?
+  ownerId     String
+  parentId    String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  owner       User         @relation(fields: [ownerId], references: [id])
+  parent      Album?       @relation("AlbumHierarchy", fields: [parentId], references: [id])
+  children    Album[]      @relation("AlbumHierarchy")
+  albumMedia  AlbumMedia[]
+
+  @@index([ownerId])
+  @@index([parentId])
+}
+
+model Media {
+  id          String       @id @default(cuid())
+  ownerId     String
+  filePath    String
+  filename    String
+  relativePath String?
+  isFavorite  Boolean      @default(false)
+  mimeType    String
+  sizeBytes   Int
+  width       Int?
+  height      Int?
+  adjustments Json?
+  capturedAt  DateTime?
+  metadataCreatedAt DateTime?
+  metadataModifiedAt DateTime?
+  latitude    Float?
+  longitude   Float?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  owner      User         @relation(fields: [ownerId], references: [id])
+  albumMedia AlbumMedia[]
+  mediaTags  MediaTag[]
+  revisions  MediaRevision[]
+
+  @@index([ownerId])
+  @@index([capturedAt])
+  @@index([metadataCreatedAt])
+}
+
+model MediaRevision {
+  id        String   @id @default(cuid())
+  mediaId   String
+  filePath  String
+  sizeBytes Int
+  width     Int?
+  height    Int?
+  createdAt DateTime @default(now())
+
+  media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@index([mediaId, createdAt])
+}
+
+model Tag {
+  id        String     @id @default(cuid())
+  ownerId   String
+  name      String
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  owner     User       @relation(fields: [ownerId], references: [id])
+  mediaTags MediaTag[]
+
+  @@unique([ownerId, name])
+  @@index([ownerId])
+}
+
+model MediaTag {
+  mediaId String
+  tagId   String
+  taggedAt DateTime @default(now())
+
+  media Media @relation(fields: [mediaId], references: [id])
+  tag   Tag   @relation(fields: [tagId], references: [id])
+
+  @@id([mediaId, tagId])
+  @@index([tagId])
+}
+
+model AlbumMedia {
+  albumId  String
+  mediaId  String
+  position Int?
+
+  album Album @relation(fields: [albumId], references: [id])
+  media Media @relation(fields: [mediaId], references: [id])
+
+  @@id([albumId, mediaId])
+  @@unique([mediaId])
+}

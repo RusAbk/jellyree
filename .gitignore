@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+server/node_modules/
+web/node_modules/
+
+# Build outputs and caches
+dist/
+coverage/
+*.tsbuildinfo
+server/dist/
+web/dist/
+web/dist-ssr/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment files
+.env
+.env.*
+server/.env
+server/.env.*
+web/.env
+web/.env.*
+*.local
+
+# Local databases and Prisma runtime files
+server/dev.db
+server/dev.db-journal
+server/prisma/dev.db
+server/prisma/dev.db-journal
+server/prisma/*.db
+server/prisma/*.db-*
+
+# Generated Prisma client (if custom output is used)
+server/generated/prisma/
+
+# User-uploaded/generated media
+server/uploads/
+!server/uploads/.gitkeep
+
+# Editor and OS artifacts
+.DS_Store
+.idea/
+*.swp
+*.swo

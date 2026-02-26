@@ -1,0 +1,14 @@
+{
+  "name": "jellyree",
+  "private": true,
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w web",
+    "dev:server": "npm run start:dev -w server",
+    "build:web": "npm run build -w web",
+    "build:server": "npm run build -w server"
+  }
+}
