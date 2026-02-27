@@ -10,7 +10,7 @@ type AlbumTreeNode = {
 
 const token = ref(localStorage.getItem('jellyree_token') || '')
 const userName = ref(localStorage.getItem('jellyree_user') || '')
-const mode = ref<'login' | 'register'>('register')
+const mode = ref<'login' | 'register'>('login')
 const authForm = reactive({
   email: '',
   password: '',
@@ -2178,24 +2178,26 @@ onBeforeUnmount(() => {
         <div class="brand-name">Jellyree</div>
         <div class="brand-sub">cloud storage + photo gallery</div>
         <div class="auth-switch">
-          <button class="chip" :class="{ active: mode === 'register' }" @click="mode = 'register'">
-            Register
-          </button>
           <button class="chip" :class="{ active: mode === 'login' }" @click="mode = 'login'">
             Login
           </button>
+          <button class="chip" :class="{ active: mode === 'register' }" @click="mode = 'register'">
+            Register
+          </button>
         </div>
-        <input v-model="authForm.email" class="input" placeholder="Email" />
-        <input v-model="authForm.password" class="input" type="password" placeholder="Password" />
-        <input
-          v-if="mode === 'register'"
-          v-model="authForm.displayName"
-          class="input"
-          placeholder="Display name"
-        />
-        <button class="btn full" @click="submitAuth">
-          {{ mode === 'register' ? 'Create account' : 'Sign in' }}
-        </button>
+        <form class="auth-form" @submit.prevent="submitAuth">
+          <input v-model="authForm.email" class="input" placeholder="Email" />
+          <input v-model="authForm.password" class="input" type="password" placeholder="Password" />
+          <input
+            v-if="mode === 'register'"
+            v-model="authForm.displayName"
+            class="input"
+            placeholder="Display name"
+          />
+          <button class="btn full" type="submit">
+            {{ mode === 'register' ? 'Create account' : 'Sign in' }}
+          </button>
+        </form>
         <div v-if="message" class="muted">{{ message }}</div>
       </div>
     </div>
