@@ -56,6 +56,7 @@ export type ShareSettings = {
   accessMode: 'link' | 'password'
   hasPassword: boolean
   token: string | null
+  expiresAt: string | null
 }
 
 async function request<T>(
@@ -239,7 +240,7 @@ export const api = {
   updateAlbumShareSettings: (
     token: string,
     albumId: string,
-    payload: { enabled: boolean; accessMode: 'link' | 'password'; password?: string },
+    payload: { enabled: boolean; accessMode: 'link' | 'password'; password?: string; expiresAt?: string | null },
   ) =>
     request<{ ok: boolean; settings: ShareSettings }>(
       `/albums/${albumId}/share-settings`,
@@ -288,7 +289,7 @@ export const api = {
   updateMediaShareSettings: (
     token: string,
     mediaId: string,
-    payload: { enabled: boolean; accessMode: 'link' | 'password'; password?: string },
+    payload: { enabled: boolean; accessMode: 'link' | 'password'; password?: string; expiresAt?: string | null },
   ) =>
     request<{ ok: boolean; settings: ShareSettings }>(
       `/media/${mediaId}/share-settings`,

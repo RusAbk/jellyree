@@ -227,6 +227,7 @@ export class AlbumsController {
           accessMode: 'link',
           hasPassword: false,
           token: null,
+          expiresAt: null,
         },
       };
     }
@@ -238,6 +239,7 @@ export class AlbumsController {
         accessMode: settings.accessMode === ShareAccessMode.PASSWORD ? 'password' : 'link',
         hasPassword: Boolean(settings.passwordHash),
         token: settings.enabled ? settings.token : null,
+        expiresAt: settings.expiresAt ? settings.expiresAt.toISOString() : null,
       },
     };
   }
@@ -246,7 +248,7 @@ export class AlbumsController {
   async upsertShareSettings(
     @Req() req: RequestWithUser,
     @Param('id') id: string,
-    @Body() body: { enabled: boolean; accessMode?: 'link' | 'password'; password?: string },
+    @Body() body: { enabled: boolean; accessMode?: 'link' | 'password'; password?: string; expiresAt?: string | null },
   ) {
     const album = await this.prisma.album.findFirst({
       where: { id, ownerId: req.user!.id },
@@ -260,6 +262,18 @@ export class AlbumsController {
     const accessMode = body.accessMode === 'password' ? ShareAccessMode.PASSWORD : ShareAccessMode.LINK;
     if (body.enabled && accessMode === ShareAccessMode.PASSWORD && !body.password?.trim()) {
       throw new BadRequestException('Password is required for password-protected sharing');
+    }
+
+    let expiresAt: Date | null = null;
+    if (body.enabled && body.expiresAt) {
+      const parsed = new Date(body.expiresAt);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new BadRequestException('Invalid expiresAt value');
+      }
+      if (parsed.getTime() <= Date.now()) {
+        throw new BadRequestException('Expiration must be in the future');
+      }
+      expiresAt = parsed;
     }
 
     const existing = await this.prisma.publicShareAccess.findUnique({
@@ -291,6 +305,7 @@ export class AlbumsController {
         enabled: Boolean(body.enabled),
         accessMode,
         passwordHash,
+        expiresAt,
       },
       create: {
         ownerId: req.user!.id,
@@ -300,6 +315,7 @@ export class AlbumsController {
         enabled: Boolean(body.enabled),
         accessMode,
         passwordHash,
+        expiresAt,
       },
     });
 
@@ -310,6 +326,7 @@ export class AlbumsController {
         accessMode: updated.accessMode === ShareAccessMode.PASSWORD ? 'password' : 'link',
         hasPassword: Boolean(updated.passwordHash),
         token: updated.enabled ? updated.token : null,
+        expiresAt: updated.expiresAt ? updated.expiresAt.toISOString() : null,
       },
     };
   }

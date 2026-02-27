@@ -109,6 +109,8 @@ const shareDialog = reactive({
   accessMode: 'link' as 'link' | 'password',
   password: '',
   hasPassword: false,
+  token: null as string | null,
+  expiresPreset: 'never' as 'never' | '1m' | '5m' | '1h' | '24h' | '7d' | '30d',
   loading: false,
   saving: false,
 })
@@ -413,8 +415,44 @@ function closeShareDialog() {
   shareDialog.open = false
   shareDialog.resourceId = ''
   shareDialog.password = ''
+  shareDialog.token = null
+  shareDialog.expiresPreset = 'never'
   shareDialog.loading = false
   shareDialog.saving = false
+}
+
+function deriveExpiresPreset(expiresAt: string | null) {
+  if (!expiresAt) return 'never' as const
+  const diff = new Date(expiresAt).getTime() - Date.now()
+  const minute = 60 * 1000
+  const hour = 60 * 60 * 1000
+  const day = 24 * hour
+  if (diff <= 2 * minute) return '1m' as const
+  if (diff <= 8 * minute) return '5m' as const
+  if (diff <= 2 * hour) return '1h' as const
+  if (diff <= 2 * day) return '24h' as const
+  if (diff <= 8 * day) return '7d' as const
+  return '30d' as const
+}
+
+function computeExpiresAtFromPreset() {
+  if (shareDialog.expiresPreset === 'never') return null
+  const now = Date.now()
+  const minute = 60 * 1000
+  const hour = 60 * 60 * 1000
+  const day = 24 * hour
+  const ttl = shareDialog.expiresPreset === '1m'
+    ? minute
+    : shareDialog.expiresPreset === '5m'
+      ? 5 * minute
+      : shareDialog.expiresPreset === '1h'
+        ? hour
+        : shareDialog.expiresPreset === '24h'
+          ? day
+          : shareDialog.expiresPreset === '7d'
+            ? 7 * day
+            : 30 * day
+  return new Date(now + ttl).toISOString()
 }
 
 function publicFileUrl(mediaId: string) {
@@ -1614,6 +1652,8 @@ async function configureMediaShare(mediaId: string) {
     shareDialog.enabled = current.settings.enabled
     shareDialog.accessMode = current.settings.accessMode
     shareDialog.hasPassword = current.settings.hasPassword
+    shareDialog.token = current.settings.token
+    shareDialog.expiresPreset = deriveExpiresPreset(current.settings.expiresAt)
     shareDialog.password = ''
     mediaShareEnabled.value = {
       ...mediaShareEnabled.value,
@@ -1653,6 +1693,8 @@ async function configureAlbumShare(albumId: string) {
     shareDialog.enabled = current.settings.enabled
     shareDialog.accessMode = current.settings.accessMode
     shareDialog.hasPassword = current.settings.hasPassword
+    shareDialog.token = current.settings.token
+    shareDialog.expiresPreset = deriveExpiresPreset(current.settings.expiresAt)
     shareDialog.password = ''
     albumShareEnabled.value = {
       ...albumShareEnabled.value,
@@ -1695,6 +1737,7 @@ async function saveShareSettings() {
     const payload = {
       enabled: shareDialog.enabled,
       accessMode: shareDialog.accessMode,
+      expiresAt: shareDialog.enabled ? computeExpiresAtFromPreset() : null,
       ...(shareDialog.password.trim() ? { password: shareDialog.password.trim() } : {}),
     }
 
@@ -1704,21 +1747,37 @@ async function saveShareSettings() {
         ...mediaShareEnabled.value,
         [shareDialog.resourceId]: updated.settings.enabled,
       }
+      shareDialog.token = updated.settings.token
+      shareDialog.hasPassword = updated.settings.hasPassword
     } else {
       const updated = await api.updateAlbumShareSettings(authHeaders(), shareDialog.resourceId, payload)
       albumShareEnabled.value = {
         ...albumShareEnabled.value,
         [shareDialog.resourceId]: updated.settings.enabled,
       }
+      shareDialog.token = updated.settings.token
+      shareDialog.hasPassword = updated.settings.hasPassword
     }
 
-    closeShareDialog()
     showToast('Share settings saved')
   } catch (error) {
     message.value = (error as Error).message
   } finally {
     shareDialog.saving = false
   }
+}
+
+async function copyLinkFromShareDialog() {
+  if (!shareDialog.enabled || !shareDialog.token) {
+    message.value = 'Enable public access first and save settings'
+    return
+  }
+
+  const link = shareDialog.resourceType === 'media'
+    ? mediaShareUrl(shareDialog.token)
+    : albumShareUrl(shareDialog.token)
+  await copyText(link)
+  showToast('Public link copied')
 }
 
 async function applyImageEditsPermanently() {
@@ -2658,6 +2717,19 @@ onBeforeUnmount(() => {
             </select>
           </div>
 
+          <div class="field" :class="{ disabled: !shareDialog.enabled }">
+            <label>Access duration</label>
+            <select v-model="shareDialog.expiresPreset" class="input" :disabled="!shareDialog.enabled">
+              <option value="never">No expiration</option>
+              <option value="1m">1 minute</option>
+              <option value="5m">5 minutes</option>
+              <option value="1h">1 hour</option>
+              <option value="24h">24 hours</option>
+              <option value="7d">7 days</option>
+              <option value="30d">30 days</option>
+            </select>
+          </div>
+
           <div
             v-if="shareDialog.enabled && shareDialog.accessMode === 'password'"
             class="field"
@@ -2672,6 +2744,9 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="dialog-actions">
+            <button class="btn ghost" :disabled="!shareDialog.enabled || !shareDialog.token" @click="copyLinkFromShareDialog">
+              Copy public link
+            </button>
             <button class="btn ghost" @click="closeShareDialog">Cancel</button>
             <button class="btn" :disabled="shareDialog.saving" @click="saveShareSettings">
               Save

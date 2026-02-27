@@ -95,6 +95,10 @@ export class PublicShareController {
       return { error: 'Invalid share link', status: 404 as const };
     }
 
+    if (access.expiresAt && access.expiresAt.getTime() <= Date.now()) {
+      return { error: 'Share link expired', status: 404 as const };
+    }
+
     if (access.accessMode === ShareAccessMode.PASSWORD) {
       if (!password) {
         return { error: 'Password required', status: 401 as const };
