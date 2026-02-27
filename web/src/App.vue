@@ -964,7 +964,11 @@ function clearSelection() {
 
 function startMarqueeSelect(event: PointerEvent) {
   if (event.button !== 0) return
-  if ((event.target as HTMLElement).closest('.photo-card')) return
+  const target = event.target as HTMLElement
+  if (!target) return
+  if (target.closest('.photo-card')) return
+  if (target.closest('.gallery-head, .gallery-toolbar, .upload-progress, .drop-hint, .fab-wrap')) return
+  if (target.closest('button, input, select, textarea, a, label')) return
 
   marquee.active = true
   marquee.additive = Boolean(event.ctrlKey || event.metaKey)
@@ -1598,7 +1602,7 @@ onBeforeUnmount(() => {
           </div>
         </aside>
 
-        <main class="gallery-main">
+        <main class="gallery-main" @pointerdown="startMarqueeSelect">
           <div class="gallery-head">
             <div>
               <div class="gallery-title">
@@ -1639,7 +1643,7 @@ onBeforeUnmount(() => {
 
           <div class="drop-hint">Drag photos to album tree on the left to move</div>
 
-          <div ref="masonryRef" class="masonry" @pointerdown="startMarqueeSelect">
+          <div ref="masonryRef" class="masonry">
             <article
               v-for="item in filteredMedia"
               :key="item.id"
