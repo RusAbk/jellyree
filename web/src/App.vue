@@ -307,6 +307,11 @@ function isMediaDragEvent(event?: DragEvent) {
   return types.includes('application/x-jellyree-media-ids')
 }
 
+function isExternalFilesDropEvent(event?: DragEvent) {
+  const types = Array.from(event?.dataTransfer?.types || [])
+  return types.includes('Files')
+}
+
 function getDraggedMediaIds(event?: DragEvent) {
   if (draggedMediaIds.value.length > 0) return [...draggedMediaIds.value]
   const raw = event?.dataTransfer?.getData('application/x-jellyree-media-ids')
@@ -930,6 +935,8 @@ async function handleDrop(event: DragEvent) {
   event.stopPropagation()
   if (!token.value) return
   if (uploadProgress.active) return
+  if (isMediaDragEvent(event) || draggedAlbumId.value || draggedPinnedId.value) return
+  if (!isExternalFilesDropEvent(event)) return
 
   const { files, relativePaths, hasFolders } = await collectDroppedFiles(event)
   if (files.length === 0) return
@@ -1517,7 +1524,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <div class="workspace" @dragover.prevent @drop="handleDrop">
+      <div class="workspace" @dragover.prevent @drop.prevent.stop="handleDrop">
         <aside class="sidebar">
           <div class="side-group">
             <div class="side-title">Library</div>
@@ -1532,7 +1539,7 @@ onBeforeUnmount(() => {
               class="nav-item"
               :class="{ active: activeSection === 'all' && !activeAlbumId, 'media-drop-target': mediaDropTargetAlbumId === null && draggedMediaIds.length > 0 }"
               @dragover.prevent="onAlbumDragOver(null, $event)"
-              @drop.prevent="onAlbumDrop(null, $event)"
+              @drop.prevent.stop="onAlbumDrop(null, $event)"
               @click="activeSection = 'all'; goRoot()"
             >
               All photos
@@ -1551,7 +1558,7 @@ onBeforeUnmount(() => {
               draggable="true"
               @dragstart="onPinnedDragStart(album.id)"
               @dragover.prevent
-              @drop="onPinnedDrop(album.id)"
+              @drop.stop="onPinnedDrop(album.id)"
               @dragend="onPinnedDragEnd"
             >
               <span>📁 {{ album.name }}</span>
@@ -1570,7 +1577,7 @@ onBeforeUnmount(() => {
               draggable="true"
               @dragstart="onAlbumDragStart(node.album.id)"
               @dragover.prevent="onAlbumDragOver(node.album.id, $event)"
-              @drop.prevent="onAlbumDrop(node.album.id, $event)"
+              @drop.prevent.stop="onAlbumDrop(node.album.id, $event)"
               @dragend="onAlbumDragEnd"
               @contextmenu.prevent="openAlbumContextMenu($event, node.album.id)"
               @click="activeSection = 'all'; openAlbum(node.album.id)"
