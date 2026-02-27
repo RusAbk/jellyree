@@ -28,6 +28,19 @@ const search = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const message = ref('')
+const routeMode = ref<'app' | 'public-media' | 'public-album'>('app')
+const routeToken = ref('')
+const routeAlbumId = ref<string | null>(null)
+const routeMediaId = ref<string | null>(null)
+const syncingFromRoute = ref(false)
+const sharedLoading = ref(false)
+const sharedAlbum = ref<{ id: string; name: string; description: string | null } | null>(null)
+const sharedMedia = ref<MediaItem | null>(null)
+const sharedAlbumMedia = ref<MediaItem[]>([])
+const sharedPassword = ref('')
+const sharedPasswordInput = ref('')
+const mediaShareEnabled = ref<Record<string, boolean>>({})
+const albumShareEnabled = ref<Record<string, boolean>>({})
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const lightboxOpen = ref(false)
@@ -83,8 +96,26 @@ const uploadProgress = reactive({
   total: 0,
   percent: 0,
 })
+const activeDetailsField = ref<'filename' | 'tags' | 'album' | null>(null)
+const toast = reactive({
+  visible: false,
+  text: '',
+})
+const shareDialog = reactive({
+  open: false,
+  resourceType: 'media' as 'media' | 'album',
+  resourceId: '',
+  enabled: false,
+  accessMode: 'link' as 'link' | 'password',
+  password: '',
+  hasPassword: false,
+  loading: false,
+  saving: false,
+})
 
 let heicConverterModulePromise: Promise<typeof import('heic2any')> | null = null
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+let popStateHandler: (() => void) | null = null
 
 const editor = reactive({
   filename: '',
@@ -117,6 +148,7 @@ const cropDrag = reactive({
 
 const activeMedia = computed(() => media.value.find((item) => item.id === activeMediaId.value) || null)
 const activeAlbum = computed(() => albums.value.find((album) => album.id === activeAlbumId.value) || null)
+const isPublicRoute = computed(() => routeMode.value !== 'app')
 
 const albumsByParent = computed(() => {
   const map = new Map<string | null, Album[]>()
@@ -194,6 +226,27 @@ const activeMediaAlbum = computed(() => activeMediaAlbums.value[0] || null)
 const undoCount = computed(() => activeMedia.value?.revisionCount ?? 0)
 const selectedCount = computed(() => selectedMediaIds.value.length)
 const selectedMediaSet = computed(() => new Set(selectedMediaIds.value))
+const visibleSubalbums = computed(() => {
+  if (activeSection.value !== 'all') return []
+  const parentId = activeAlbumId.value || null
+  return albums.value
+    .filter((album) => (album.parentId || null) === parentId)
+    .sort((a, b) => a.name.localeCompare(b.name))
+})
+const albumPreviewMediaById = computed(() => {
+  const map = new Map<string, { id: string; filename: string; mimeType: string }>()
+  for (const album of albums.value) {
+    for (const preview of album.previewMedia || []) {
+      if (!map.has(preview.id)) {
+        map.set(preview.id, preview)
+      }
+    }
+  }
+  return map
+})
+const visibleSubalbumPreviewMedia = computed(() =>
+  visibleSubalbums.value.flatMap((album) => album.previewMedia || []).slice(0, 32),
+)
 const activeMediaMetadataCreatedLabel = computed(() => {
   if (!activeMedia.value) return '—'
   return formatDateLabel(activeMedia.value.metadataCreatedAt || activeMedia.value.capturedAt)
@@ -232,6 +285,152 @@ const editorCropRectStyle = computed(() => ({
 
 function authHeaders() {
   return token.value
+}
+
+function readRouteFromLocation() {
+  const path = window.location.pathname.replace(/\/+$/, '') || '/'
+  const sharedMediaMatch = path.match(/^\/shared\/media\/([^/]+)$/)
+  if (sharedMediaMatch) {
+    return { mode: 'public-media' as const, token: decodeURIComponent(sharedMediaMatch[1] || '') }
+  }
+
+  const sharedAlbumMatch = path.match(/^\/shared\/album\/([^/]+)$/)
+  if (sharedAlbumMatch) {
+    return { mode: 'public-album' as const, token: decodeURIComponent(sharedAlbumMatch[1] || '') }
+  }
+
+  const albumMatch = path.match(/^\/albums\/([^/]+)$/)
+  if (albumMatch) {
+    return { mode: 'app' as const, albumId: decodeURIComponent(albumMatch[1] || ''), mediaId: null as string | null }
+  }
+
+  const mediaMatch = path.match(/^\/media\/([^/]+)$/)
+  if (mediaMatch) {
+    return { mode: 'app' as const, albumId: null as string | null, mediaId: decodeURIComponent(mediaMatch[1] || '') }
+  }
+
+  return { mode: 'app' as const, albumId: null as string | null, mediaId: null as string | null }
+}
+
+function pushPath(path: string, replace = false) {
+  const next = path || '/'
+  if (window.location.pathname === next) return
+  if (replace) {
+    window.history.replaceState({}, '', next)
+  } else {
+    window.history.pushState({}, '', next)
+  }
+}
+
+async function loadPublicRoute() {
+  if (!routeToken.value) return
+  sharedLoading.value = true
+  message.value = ''
+
+  try {
+    if (routeMode.value === 'public-media') {
+      const payload = await api.publicMedia(routeToken.value, sharedPassword.value || undefined)
+      sharedMedia.value = payload.media
+      sharedAlbum.value = null
+      sharedAlbumMedia.value = []
+      return
+    }
+
+    if (routeMode.value === 'public-album') {
+      const payload = await api.publicAlbum(routeToken.value, sharedPassword.value || undefined)
+      sharedAlbum.value = payload.album
+      sharedAlbumMedia.value = payload.media
+      sharedMedia.value = null
+      return
+    }
+  } catch (error) {
+    message.value = (error as Error).message
+    sharedMedia.value = null
+    sharedAlbum.value = null
+    sharedAlbumMedia.value = []
+  } finally {
+    sharedLoading.value = false
+  }
+}
+
+async function applyRouteFromLocation() {
+  const route = readRouteFromLocation()
+
+  if (route.mode !== 'app') {
+    routeMode.value = route.mode
+    routeToken.value = route.token
+    routeAlbumId.value = null
+    routeMediaId.value = null
+    sharedPassword.value = ''
+    sharedPasswordInput.value = ''
+    await loadPublicRoute()
+    return
+  }
+
+  routeMode.value = 'app'
+  routeToken.value = ''
+  routeAlbumId.value = route.albumId || null
+  routeMediaId.value = route.mediaId || null
+  sharedMedia.value = null
+  sharedAlbum.value = null
+  sharedAlbumMedia.value = []
+
+  if (!token.value) return
+
+  syncingFromRoute.value = true
+  activeSection.value = 'all'
+  activeAlbumId.value = routeAlbumId.value || ''
+  if (routeMediaId.value) {
+    activeMediaId.value = routeMediaId.value
+  } else if (!routeAlbumId.value) {
+    activeMediaId.value = null
+  }
+  syncingFromRoute.value = false
+  await loadAll()
+}
+
+function mediaShareUrl(tokenValue: string) {
+  return `${window.location.origin}/shared/media/${encodeURIComponent(tokenValue)}`
+}
+
+function albumShareUrl(tokenValue: string) {
+  return `${window.location.origin}/shared/album/${encodeURIComponent(tokenValue)}`
+}
+
+async function copyText(value: string) {
+  await navigator.clipboard.writeText(value)
+}
+
+function isAlbumShareEnabled(albumId: string) {
+  return albumShareEnabled.value[albumId] === true
+}
+
+function isMediaShareEnabled(mediaId: string) {
+  return mediaShareEnabled.value[mediaId] === true
+}
+
+function closeShareDialog() {
+  shareDialog.open = false
+  shareDialog.resourceId = ''
+  shareDialog.password = ''
+  shareDialog.loading = false
+  shareDialog.saving = false
+}
+
+function publicFileUrl(mediaId: string) {
+  if (!routeToken.value) return ''
+  if (routeMode.value === 'public-media') {
+    return api.publicMediaFileUrl(routeToken.value, sharedPassword.value || undefined)
+  }
+  if (routeMode.value === 'public-album') {
+    return api.publicAlbumMediaFileUrl(routeToken.value, mediaId, sharedPassword.value || undefined)
+  }
+  return ''
+}
+
+function submitSharedPassword() {
+  sharedPassword.value = sharedPasswordInput.value.trim()
+  void loadPublicRoute()
 }
 
 function getMediaTimestamp(item: MediaItem) {
@@ -427,6 +626,7 @@ function openAlbumContextMenu(event: MouseEvent, albumId: string) {
   albumContextMenu.y = event.clientY
   mediaContextMenu.open = false
   mediaContextMenu.mediaId = null
+  void preloadAlbumShareState(albumId)
 }
 
 function openMediaContextMenu(event: MouseEvent, mediaId: string) {
@@ -439,6 +639,39 @@ function openMediaContextMenu(event: MouseEvent, mediaId: string) {
   mediaContextMenu.y = event.clientY
   albumContextMenu.open = false
   albumContextMenu.albumId = null
+  void preloadMediaShareState(mediaId)
+}
+
+async function preloadAlbumShareState(albumId: string) {
+  if (!token.value) return
+  try {
+    const current = await api.getAlbumShareSettings(authHeaders(), albumId)
+    albumShareEnabled.value = {
+      ...albumShareEnabled.value,
+      [albumId]: current.settings.enabled,
+    }
+  } catch {
+    albumShareEnabled.value = {
+      ...albumShareEnabled.value,
+      [albumId]: false,
+    }
+  }
+}
+
+async function preloadMediaShareState(mediaId: string) {
+  if (!token.value) return
+  try {
+    const current = await api.getMediaShareSettings(authHeaders(), mediaId)
+    mediaShareEnabled.value = {
+      ...mediaShareEnabled.value,
+      [mediaId]: current.settings.enabled,
+    }
+  } catch {
+    mediaShareEnabled.value = {
+      ...mediaShareEnabled.value,
+      [mediaId]: false,
+    }
+  }
 }
 
 function selectedAlbumFromContext() {
@@ -480,6 +713,20 @@ function contextOpenAlbum() {
   if (!album) return
   activeSection.value = 'all'
   openAlbum(album.id)
+}
+
+async function contextShareAlbum() {
+  const album = selectedAlbumFromContext()
+  closeContextMenus()
+  if (!album) return
+  await configureAlbumShare(album.id)
+}
+
+async function contextCopyAlbumShareLink() {
+  const album = selectedAlbumFromContext()
+  closeContextMenus()
+  if (!album) return
+  await copyAlbumShareLink(album.id)
 }
 
 function mediaFromContext() {
@@ -546,6 +793,27 @@ function contextDeleteMedia() {
   void deleteMedia(item.id)
 }
 
+async function contextShareMedia() {
+  const item = mediaFromContext()
+  closeContextMenus()
+  if (!item) return
+  await configureMediaShare(item.id)
+}
+
+async function contextCopyMediaShareLink() {
+  const item = mediaFromContext()
+  closeContextMenus()
+  if (!item) return
+  await copyMediaShareLink(item.id)
+}
+
+function contextCopyMedia() {
+  const item = mediaFromContext()
+  closeContextMenus()
+  if (!item) return
+  void duplicateMedia(item.id)
+}
+
 async function downloadSelectedAsZip() {
   if (!token.value || selectedMediaIds.value.length === 0) return
 
@@ -576,10 +844,40 @@ function getFileExtension(filename: string) {
   return index >= 0 ? trimmed.slice(index + 1) : ''
 }
 
+function splitFilenameParts(filename: string) {
+  const trimmed = filename.trim()
+  const index = trimmed.lastIndexOf('.')
+  if (index <= 0 || index === trimmed.length - 1) {
+    return { baseName: trimmed, extension: '' }
+  }
+  return {
+    baseName: trimmed.slice(0, index),
+    extension: trimmed.slice(index),
+  }
+}
+
+function activeFilenameExtension() {
+  if (!activeMedia.value) return ''
+  return splitFilenameParts(activeMedia.value.filename).extension
+}
+
+function displayEditorFilename() {
+  const baseName = editor.filename.trim()
+  if (!baseName) return '—'
+  return `${baseName}${activeFilenameExtension()}`
+}
+
 function isHeicFile(item: MediaItem) {
   const mime = item.mimeType.toLowerCase()
   if (mime.includes('heic') || mime.includes('heif')) return true
   const ext = getFileExtension(item.filename)
+  return ext === 'heic' || ext === 'heif'
+}
+
+function isHeicLike(mimeType: string, filename: string) {
+  const mime = mimeType.toLowerCase()
+  if (mime.includes('heic') || mime.includes('heif')) return true
+  const ext = getFileExtension(filename)
   return ext === 'heic' || ext === 'heif'
 }
 
@@ -595,6 +893,20 @@ function canPreviewInBrowser(item: MediaItem) {
   if (!isLikelyImageFile(item)) return false
   if (isHeicFile(item)) {
     return Boolean(thumbs.value[item.id])
+  }
+  return true
+}
+
+function canPreviewFromMeta(mediaId: string, mimeType: string, filename: string) {
+  const mime = mimeType.toLowerCase()
+  if (!mime.startsWith('image/')) {
+    const ext = getFileExtension(filename)
+    if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'heif', 'avif'].includes(ext)) {
+      return false
+    }
+  }
+  if (isHeicLike(mimeType, filename)) {
+    return Boolean(thumbs.value[mediaId])
   }
   return true
 }
@@ -616,8 +928,11 @@ async function loadThumb(mediaId: string) {
   try {
     const blob = await api.fetchFileBlob(token.value, mediaId)
     const item = media.value.find((entry) => entry.id === mediaId)
-    const mime = item?.mimeType.toLowerCase() || ''
-    const isHeic = item ? isHeicFile(item) : false
+    const preview = albumPreviewMediaById.value.get(mediaId)
+    const mime = item?.mimeType.toLowerCase() || preview?.mimeType.toLowerCase() || ''
+    const isHeic = item
+      ? isHeicFile(item)
+      : Boolean(preview && isHeicLike(preview.mimeType, preview.filename))
 
     if (isHeic || mime.includes('heic') || mime.includes('heif')) {
       if (!heicConverterModulePromise) {
@@ -644,7 +959,7 @@ async function loadThumb(mediaId: string) {
 
 function applyMediaToEditor(item: MediaItem | null) {
   if (!item) return
-  editor.filename = item.filename
+  editor.filename = splitFilenameParts(item.filename).baseName
   editor.tagsInput = item.mediaTags.map((entry) => entry.tag.name).join(', ')
   resetEditorAdjustments()
   targetAlbumId.value = item.albumMedia[0]?.albumId || ''
@@ -685,9 +1000,13 @@ async function loadAll() {
   }
 }
 
-function openAlbum(albumId: string) {
+function openAlbum(albumId: string, pushRoute = true) {
   activeSection.value = 'all'
   activeAlbumId.value = albumId
+  activeMediaId.value = null
+  if (pushRoute && routeMode.value === 'app') {
+    pushPath(`/albums/${encodeURIComponent(albumId)}`)
+  }
 
   const parentChain: string[] = []
   let cursor = albums.value.find((a) => a.id === albumId)
@@ -700,11 +1019,15 @@ function openAlbum(albumId: string) {
   saveExpandedAlbums()
 }
 
-function goRoot() {
+function goRoot(pushRoute = true) {
   activeAlbumId.value = ''
+  activeMediaId.value = null
+  if (pushRoute && routeMode.value === 'app') {
+    pushPath('/')
+  }
 }
 
-function selectMedia(mediaId: string, event?: MouseEvent) {
+function selectMedia(mediaId: string, event?: MouseEvent, pushRoute = true) {
   if (Date.now() - suppressClickUntil.value < 180) return
 
   if (event?.shiftKey && activeMediaId.value) {
@@ -738,6 +1061,9 @@ function selectMedia(mediaId: string, event?: MouseEvent) {
 
   selectedMediaIds.value = [mediaId]
   activeMediaId.value = mediaId
+  if (pushRoute && routeMode.value === 'app') {
+    pushPath(`/media/${encodeURIComponent(mediaId)}`)
+  }
   closeContextMenus()
   void loadThumb(mediaId)
 }
@@ -1030,6 +1356,109 @@ function onFileInput(event: Event) {
   void uploadFiles(target.files)
 }
 
+function showToast(text: string) {
+  toast.text = text
+  toast.visible = true
+  if (toastTimer) {
+    clearTimeout(toastTimer)
+  }
+  toastTimer = setTimeout(() => {
+    toast.visible = false
+  }, 1800)
+}
+
+function normalizeTags(input: string) {
+  const unique = new Set(
+    input
+      .split(',')
+      .map((tag) => tag.trim().toLowerCase())
+      .filter(Boolean),
+  )
+  return [...unique].sort()
+}
+
+function beginDetailsFieldEdit(field: 'filename' | 'tags' | 'album') {
+  if (!activeMedia.value) return
+  activeDetailsField.value = field
+}
+
+function cancelDetailsFieldEdit(field: 'filename' | 'tags' | 'album') {
+  if (!activeMedia.value) {
+    activeDetailsField.value = null
+    return
+  }
+
+  if (field === 'filename') {
+    editor.filename = splitFilenameParts(activeMedia.value.filename).baseName
+  }
+  if (field === 'tags') {
+    editor.tagsInput = activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', ')
+  }
+  if (field === 'album') {
+    targetAlbumId.value = activeMedia.value.albumMedia[0]?.albumId || ''
+  }
+
+  activeDetailsField.value = null
+}
+
+async function commitDetailsFieldEdit(field: 'filename' | 'tags' | 'album') {
+  if (!activeMedia.value || !token.value) return
+  if (activeDetailsField.value !== field) return
+  if (saving.value) return
+
+  const mediaId = activeMedia.value.id
+  saving.value = true
+
+  try {
+    if (field === 'filename') {
+      const currentParts = splitFilenameParts(activeMedia.value.filename)
+      const nextBaseName = editor.filename.trim()
+      const currentFilename = activeMedia.value.filename
+      if (!nextBaseName || nextBaseName === currentParts.baseName) {
+        activeDetailsField.value = null
+        editor.filename = currentParts.baseName
+        return
+      }
+
+      const nextFilename = `${nextBaseName}${currentParts.extension}`
+      if (nextFilename === currentFilename) {
+        activeDetailsField.value = null
+        return
+      }
+      await api.updateMedia(authHeaders(), mediaId, { filename: nextFilename })
+    }
+
+    if (field === 'tags') {
+      const nextTags = normalizeTags(editor.tagsInput)
+      const currentTags = normalizeTags(activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(','))
+      if (nextTags.join('|') === currentTags.join('|')) {
+        activeDetailsField.value = null
+        return
+      }
+      await api.updateMedia(authHeaders(), mediaId, { tags: nextTags })
+    }
+
+    if (field === 'album') {
+      const nextAlbumId = targetAlbumId.value
+      const currentAlbumId = activeMedia.value.albumMedia[0]?.albumId || ''
+      if (!nextAlbumId || nextAlbumId === currentAlbumId) {
+        activeDetailsField.value = null
+        targetAlbumId.value = currentAlbumId
+        return
+      }
+      await api.bulkMoveAlbum(authHeaders(), [mediaId], nextAlbumId)
+    }
+
+    activeDetailsField.value = null
+    await loadAll()
+    showToast('Changes saved')
+  } catch (error) {
+    message.value = (error as Error).message
+  } finally {
+    saving.value = false
+  }
+}
+
 async function createAlbum() {
   if (!createAlbumName.value.trim() || !token.value) return
   createAlbumBusy.value = true
@@ -1082,36 +1511,6 @@ async function deleteAlbum(album: Album) {
     if (activeAlbumId.value === album.id) {
       activeAlbumId.value = ''
     }
-    await loadAll()
-  } catch (error) {
-    message.value = (error as Error).message
-  }
-}
-
-async function saveMediaInfo() {
-  if (!activeMedia.value || !token.value) return
-  saving.value = true
-
-  try {
-    const tagsValue = editor.tagsInput.split(',').map((tag) => tag.trim().toLowerCase()).filter(Boolean)
-    await api.updateMedia(authHeaders(), activeMedia.value.id, {
-      filename: editor.filename,
-      tags: tagsValue,
-    })
-    message.value = 'Photo info saved'
-    await loadAll()
-  } catch (error) {
-    message.value = (error as Error).message
-  } finally {
-    saving.value = false
-  }
-}
-
-async function addActiveToAlbum() {
-  if (!activeMedia.value || !token.value || !targetAlbumId.value) return
-  try {
-    await api.bulkMoveAlbum(authHeaders(), [activeMedia.value.id], targetAlbumId.value)
-    message.value = 'Moved to album'
     await loadAll()
   } catch (error) {
     message.value = (error as Error).message
@@ -1189,6 +1588,136 @@ async function deleteMedia(mediaId: string) {
     await loadAll()
   } catch (error) {
     message.value = (error as Error).message
+  }
+}
+
+async function duplicateMedia(mediaId: string) {
+  if (!token.value) return
+  try {
+    const copied = await api.copyMedia(authHeaders(), mediaId)
+    showToast('Copy created')
+    await loadAll()
+    activeMediaId.value = copied.id
+    selectedMediaIds.value = [copied.id]
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
+async function configureMediaShare(mediaId: string) {
+  if (!token.value) return
+  try {
+    const current = await api.getMediaShareSettings(authHeaders(), mediaId)
+    shareDialog.open = true
+    shareDialog.resourceType = 'media'
+    shareDialog.resourceId = mediaId
+    shareDialog.enabled = current.settings.enabled
+    shareDialog.accessMode = current.settings.accessMode
+    shareDialog.hasPassword = current.settings.hasPassword
+    shareDialog.password = ''
+    mediaShareEnabled.value = {
+      ...mediaShareEnabled.value,
+      [mediaId]: current.settings.enabled,
+    }
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
+async function copyMediaShareLink(mediaId: string) {
+  if (!token.value) return
+  try {
+    const current = await api.getMediaShareSettings(authHeaders(), mediaId)
+    if (!current.settings.enabled || !current.settings.token) {
+      message.value = 'Public access is disabled. Open Public access settings first.'
+      return
+    }
+    mediaShareEnabled.value = {
+      ...mediaShareEnabled.value,
+      [mediaId]: true,
+    }
+    await copyText(mediaShareUrl(current.settings.token))
+    showToast('Media share link copied')
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
+async function configureAlbumShare(albumId: string) {
+  if (!token.value) return
+  try {
+    const current = await api.getAlbumShareSettings(authHeaders(), albumId)
+    shareDialog.open = true
+    shareDialog.resourceType = 'album'
+    shareDialog.resourceId = albumId
+    shareDialog.enabled = current.settings.enabled
+    shareDialog.accessMode = current.settings.accessMode
+    shareDialog.hasPassword = current.settings.hasPassword
+    shareDialog.password = ''
+    albumShareEnabled.value = {
+      ...albumShareEnabled.value,
+      [albumId]: current.settings.enabled,
+    }
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
+async function copyAlbumShareLink(albumId: string) {
+  if (!token.value) return
+  try {
+    const current = await api.getAlbumShareSettings(authHeaders(), albumId)
+    if (!current.settings.enabled || !current.settings.token) {
+      message.value = 'Public access is disabled. Open Public access settings first.'
+      return
+    }
+    albumShareEnabled.value = {
+      ...albumShareEnabled.value,
+      [albumId]: true,
+    }
+    await copyText(albumShareUrl(current.settings.token))
+    showToast('Album share link copied')
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
+async function saveShareSettings() {
+  if (!token.value || !shareDialog.resourceId) return
+  if (shareDialog.saving) return
+  if (shareDialog.enabled && shareDialog.accessMode === 'password' && !shareDialog.hasPassword && !shareDialog.password.trim()) {
+    message.value = 'Password is required'
+    return
+  }
+
+  shareDialog.saving = true
+  try {
+    const payload = {
+      enabled: shareDialog.enabled,
+      accessMode: shareDialog.accessMode,
+      ...(shareDialog.password.trim() ? { password: shareDialog.password.trim() } : {}),
+    }
+
+    if (shareDialog.resourceType === 'media') {
+      const updated = await api.updateMediaShareSettings(authHeaders(), shareDialog.resourceId, payload)
+      mediaShareEnabled.value = {
+        ...mediaShareEnabled.value,
+        [shareDialog.resourceId]: updated.settings.enabled,
+      }
+    } else {
+      const updated = await api.updateAlbumShareSettings(authHeaders(), shareDialog.resourceId, payload)
+      albumShareEnabled.value = {
+        ...albumShareEnabled.value,
+        [shareDialog.resourceId]: updated.settings.enabled,
+      }
+    }
+
+    closeShareDialog()
+    showToast('Share settings saved')
+  } catch (error) {
+    message.value = (error as Error).message
+  } finally {
+    shareDialog.saving = false
   }
 }
 
@@ -1402,7 +1931,7 @@ async function submitAuth() {
     userName.value = payload.user.displayName || payload.user.email
     localStorage.setItem('jellyree_token', payload.accessToken)
     localStorage.setItem('jellyree_user', userName.value)
-    await loadAll()
+    await applyRouteFromLocation()
   } catch (error) {
     message.value = (error as Error).message
   }
@@ -1444,37 +1973,148 @@ watch(filteredMedia, (items) => {
   }
 })
 
+watch(visibleSubalbumPreviewMedia, (items) => {
+  items.forEach((preview) => {
+    void loadThumb(preview.id)
+  })
+})
+
+watch([activeAlbumId, activeMediaId, token, routeMode], () => {
+  if (!token.value || routeMode.value !== 'app' || syncingFromRoute.value) return
+  if (activeMediaId.value) {
+    pushPath(`/media/${encodeURIComponent(activeMediaId.value)}`, true)
+    return
+  }
+  if (activeAlbumId.value) {
+    pushPath(`/albums/${encodeURIComponent(activeAlbumId.value)}`, true)
+    return
+  }
+  pushPath('/', true)
+})
+
 onMounted(async () => {
+  popStateHandler = () => {
+    void applyRouteFromLocation()
+  }
+
+  window.addEventListener('popstate', popStateHandler)
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('pointerup', stopCropDrag)
   window.addEventListener('pointermove', onWindowPointerMove)
   window.addEventListener('pointerup', onWindowPointerUp)
   window.addEventListener('pointerdown', onGlobalPointerDown)
-  if (!token.value) return
+  if (!token.value) {
+    await applyRouteFromLocation()
+    return
+  }
 
   try {
     const me = await api.me(token.value)
     userName.value = (me as { displayName?: string; email?: string }).displayName ||
       (me as { email?: string }).email ||
       'user'
-    await loadAll()
+    await applyRouteFromLocation()
   } catch {
     logout()
   }
 })
 
 onBeforeUnmount(() => {
+  if (popStateHandler) {
+    window.removeEventListener('popstate', popStateHandler)
+    popStateHandler = null
+  }
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('pointerup', stopCropDrag)
   window.removeEventListener('pointermove', onWindowPointerMove)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointerdown', onGlobalPointerDown)
+  if (toastTimer) {
+    clearTimeout(toastTimer)
+  }
 })
 </script>
 
 <template>
   <div class="app">
-    <div v-if="!token" class="auth-wrap">
+    <template v-if="isPublicRoute">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand">
+            <span class="brand-mark">jr</span>
+            <div>
+              <div class="brand-name">Jellyree</div>
+              <div class="brand-sub">Public share</div>
+            </div>
+          </div>
+          <div class="topbar-badge" v-if="routeMode === 'public-album' && sharedAlbumMedia.length > 0">
+            {{ sharedAlbumMedia.length }} photos
+          </div>
+        </div>
+      </header>
+
+      <div class="workspace public-workspace">
+        <main class="gallery-main">
+          <div class="gallery-head">
+            <div>
+              <div class="gallery-title">
+                {{ routeMode === 'public-media' ? (sharedMedia?.filename || 'Shared file') : (sharedAlbum?.name || 'Shared album') }}
+              </div>
+              <div class="muted" v-if="routeMode === 'public-album'">
+                {{ sharedAlbumMedia.length }} item(s)
+              </div>
+            </div>
+          </div>
+
+          <div v-if="sharedLoading" class="muted">Loading shared content...</div>
+          <div v-else-if="message && message.toLowerCase().includes('password')" class="shared-password-box">
+            <div class="muted">This shared content is password protected.</div>
+            <div class="shared-password-row">
+              <input
+                v-model="sharedPasswordInput"
+                class="input"
+                type="password"
+                placeholder="Enter password"
+                @keydown.enter.prevent="submitSharedPassword"
+              />
+              <button class="btn" @click="submitSharedPassword">Open</button>
+            </div>
+          </div>
+          <div v-else-if="message" class="muted">{{ message }}</div>
+
+          <div v-else-if="routeMode === 'public-media' && sharedMedia" class="public-single-view">
+            <img
+              v-if="sharedMedia.mimeType.startsWith('image/')"
+              class="public-single-image"
+              :src="publicFileUrl(sharedMedia.id)"
+              :alt="sharedMedia.filename"
+            />
+            <div v-else class="public-single-fallback">
+              <div class="photo-fallback">{{ sharedMedia.mimeType }}</div>
+            </div>
+          </div>
+
+          <div v-else-if="routeMode === 'public-album'" class="masonry public-album-grid">
+            <article
+              v-for="item in sharedAlbumMedia"
+              :key="`shared-${item.id}`"
+              class="photo-card"
+            >
+              <img
+                v-if="item.mimeType.startsWith('image/')"
+                class="photo-img"
+                :src="publicFileUrl(item.id)"
+                :alt="item.filename"
+                loading="lazy"
+              />
+              <div v-else class="photo-fallback">{{ item.mimeType }}</div>
+            </article>
+          </div>
+        </main>
+      </div>
+    </template>
+
+    <div v-else-if="!token" class="auth-wrap">
       <div class="auth-card">
         <div class="brand-name">Jellyree</div>
         <div class="brand-sub">cloud storage + photo gallery</div>
@@ -1645,6 +2285,36 @@ onBeforeUnmount(() => {
 
           <div ref="masonryRef" class="masonry">
             <article
+              v-for="album in visibleSubalbums"
+              :key="`subalbum-${album.id}`"
+              class="photo-card album-card"
+              @click="openAlbum(album.id)"
+            >
+              <div v-if="album.previewMedia.length > 0" class="album-preview-grid">
+                <div
+                  v-for="preview in album.previewMedia.slice(0, 4)"
+                  :key="`album-preview-${album.id}-${preview.id}`"
+                  class="album-preview-cell"
+                >
+                  <img
+                    v-if="thumbs[preview.id] && canPreviewFromMeta(preview.id, preview.mimeType, preview.filename)"
+                    class="photo-img"
+                    :src="thumbs[preview.id]"
+                    :alt="preview.filename"
+                    loading="lazy"
+                    @error="onThumbError(preview.id)"
+                  />
+                  <div v-else class="photo-fallback">{{ preview.mimeType }}</div>
+                </div>
+              </div>
+              <div v-else class="album-empty-preview">📁</div>
+              <div class="album-card-meta">
+                <div class="album-card-name">📁 {{ album.name }}</div>
+                <div class="muted">{{ album.mediaCount }} item(s)</div>
+              </div>
+            </article>
+
+            <article
               v-for="item in filteredMedia"
               :key="item.id"
               class="photo-card"
@@ -1701,7 +2371,24 @@ onBeforeUnmount(() => {
 
           <div class="field">
             <label>Name</label>
-            <input v-model="editor.filename" class="input" />
+            <div
+              v-if="activeDetailsField !== 'filename'"
+              class="inline-edit-value"
+              @click="beginDetailsFieldEdit('filename')"
+            >
+              {{ displayEditorFilename() }}
+            </div>
+            <div v-else class="filename-edit-row">
+              <input
+                v-model="editor.filename"
+                class="input"
+                autofocus
+                @blur="commitDetailsFieldEdit('filename')"
+                @keydown.enter.prevent="commitDetailsFieldEdit('filename')"
+                @keydown.esc.prevent="cancelDetailsFieldEdit('filename')"
+              />
+              <span v-if="activeFilenameExtension()" class="filename-ext">{{ activeFilenameExtension() }}</span>
+            </div>
           </div>
           <div class="field">
             <label>Metadata created</label>
@@ -1713,16 +2400,45 @@ onBeforeUnmount(() => {
           </div>
           <div class="field">
             <label>Tags</label>
-            <input v-model="editor.tagsInput" class="input" placeholder="tag1, tag2" />
+            <div
+              v-if="activeDetailsField !== 'tags'"
+              class="inline-edit-value"
+              @click="beginDetailsFieldEdit('tags')"
+            >
+              {{ editor.tagsInput || '—' }}
+            </div>
+            <input
+              v-else
+              v-model="editor.tagsInput"
+              class="input"
+              placeholder="tag1, tag2"
+              autofocus
+              @blur="commitDetailsFieldEdit('tags')"
+              @keydown.enter.prevent="commitDetailsFieldEdit('tags')"
+              @keydown.esc.prevent="cancelDetailsFieldEdit('tags')"
+            />
           </div>
 
           <div class="field">
             <label>Album</label>
-            <select v-model="targetAlbumId" class="input">
+            <div
+              v-if="activeDetailsField !== 'album'"
+              class="inline-edit-value"
+              @click="beginDetailsFieldEdit('album')"
+            >
+              {{ activeMediaAlbum?.name || '—' }}
+            </div>
+            <select
+              v-else
+              v-model="targetAlbumId"
+              class="input"
+              @change="commitDetailsFieldEdit('album')"
+              @blur="commitDetailsFieldEdit('album')"
+              @keydown.esc.prevent="cancelDetailsFieldEdit('album')"
+            >
               <option value="">Select album</option>
               <option v-for="album in albums" :key="album.id" :value="album.id">{{ album.name }}</option>
             </select>
-            <button class="btn ghost" @click="addActiveToAlbum" :disabled="!targetAlbumId">Move to album</button>
           </div>
 
           <div class="field" v-if="activeMediaAlbum">
@@ -1738,7 +2454,6 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="detail-actions">
-            <button class="btn" :disabled="saving" @click="saveMediaInfo">Save info</button>
             <button class="btn ghost" @click="openEditMode(activeMedia.id)">Edit photo</button>
             <button class="btn ghost" @click="toggleFavorite(activeMedia.id)">
               {{ activeMedia.isFavorite ? 'Unfavorite' : 'Favorite' }}
@@ -1757,6 +2472,8 @@ onBeforeUnmount(() => {
         :style="{ left: `${albumContextMenu.x}px`, top: `${albumContextMenu.y}px` }"
       >
         <button @click="contextOpenAlbum">Open album</button>
+        <button @click="contextShareAlbum">Public access settings…</button>
+        <button v-if="albumContextMenu.albumId && isAlbumShareEnabled(albumContextMenu.albumId)" @click="contextCopyAlbumShareLink">Copy public link</button>
         <button @click="contextToggleAlbumPin">{{ pinnedAlbumIds.includes(albumContextMenu.albumId || '') ? 'Unpin album' : 'Pin album' }}</button>
         <button v-if="selectedAlbumFromContext()?.parentId" @click="contextMoveAlbumToRoot">Move to root</button>
         <button @click="contextRenameAlbum">Rename</button>
@@ -1770,12 +2487,19 @@ onBeforeUnmount(() => {
       >
         <button @click="contextOpenMedia">Open</button>
         <button @click="contextEditMedia">Edit photo</button>
+        <button @click="contextCopyMedia">Create copy</button>
+        <button @click="contextShareMedia">Public access settings…</button>
+        <button v-if="mediaContextMenu.mediaId && isMediaShareEnabled(mediaContextMenu.mediaId)" @click="contextCopyMediaShareLink">Copy public link</button>
         <button @click="contextDownloadMedia">Download</button>
         <button @click="contextToggleMediaFavorite">
           {{ mediaFromContext()?.isFavorite ? 'Remove favorite' : 'Add favorite' }}
         </button>
         <button class="danger" @click="contextDeleteMedia">Delete</button>
       </div>
+
+      <Transition name="toast-pop">
+        <div v-if="toast.visible" class="toast-notice">{{ toast.text }}</div>
+      </Transition>
 
       <div v-if="lightboxOpen && activeMedia" class="overlay" @click.self="closeLightbox">
         <button class="overlay-close" @click="closeLightbox">×</button>
@@ -1914,6 +2638,44 @@ onBeforeUnmount(() => {
               Undo apply ({{ undoCount }})
             </button>
             <button class="btn" :disabled="saving" @click="applyImageEditsPermanently">Apply permanently</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="shareDialog.open" class="overlay" @click.self="closeShareDialog">
+        <div class="album-dialog share-dialog">
+          <div class="details-title">Public access settings</div>
+          <label class="share-toggle-row">
+            <input v-model="shareDialog.enabled" type="checkbox" />
+            <span>Enable public access</span>
+          </label>
+
+          <div class="field" :class="{ disabled: !shareDialog.enabled }">
+            <label>Access mode</label>
+            <select v-model="shareDialog.accessMode" class="input" :disabled="!shareDialog.enabled">
+              <option value="link">Anyone with link</option>
+              <option value="password">Password protected</option>
+            </select>
+          </div>
+
+          <div
+            v-if="shareDialog.enabled && shareDialog.accessMode === 'password'"
+            class="field"
+          >
+            <label>{{ shareDialog.hasPassword ? 'New password (optional)' : 'Password' }}</label>
+            <input
+              v-model="shareDialog.password"
+              class="input"
+              type="password"
+              :placeholder="shareDialog.hasPassword ? 'Leave empty to keep current password' : 'Enter password'"
+            />
+          </div>
+
+          <div class="dialog-actions">
+            <button class="btn ghost" @click="closeShareDialog">Cancel</button>
+            <button class="btn" :disabled="shareDialog.saving" @click="saveShareSettings">
+              Save
+            </button>
           </div>
         </div>
       </div>

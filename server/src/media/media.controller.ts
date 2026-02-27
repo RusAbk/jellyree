@@ -25,8 +25,9 @@ import { createReadStream, existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import type { Response } from 'express';
 import { unlink } from 'fs/promises';
+import * as bcrypt from 'bcrypt';
 import sharp from 'sharp';
-import { Prisma } from '@prisma/client';
+import { Prisma, ShareAccessMode, ShareResourceType } from '@prisma/client';
 import exifr from 'exifr';
 import JSZip from 'jszip';
 import {
@@ -35,6 +36,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { createOpaqueShareToken } from './share-token';
 
 function toNumber(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -763,6 +765,121 @@ export class MediaController {
     }
   }
 
+  @Get(':id/share-settings')
+  async getShareSettings(@Req() req: RequestWithUser, @Param('id') id: string) {
+    const media = await this.prisma.media.findFirst({
+      where: { id, ownerId: req.user!.id },
+      select: { id: true },
+    });
+
+    if (!media) {
+      return { error: 'Not found' };
+    }
+
+    const settings = await this.prisma.publicShareAccess.findUnique({
+      where: {
+        resourceType_resourceId: {
+          resourceType: ShareResourceType.MEDIA,
+          resourceId: id,
+        },
+      },
+    });
+
+    if (!settings) {
+      return {
+        ok: true,
+        settings: {
+          enabled: false,
+          accessMode: 'link',
+          hasPassword: false,
+          token: null,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      settings: {
+        enabled: settings.enabled,
+        accessMode: settings.accessMode === ShareAccessMode.PASSWORD ? 'password' : 'link',
+        hasPassword: Boolean(settings.passwordHash),
+        token: settings.enabled ? settings.token : null,
+      },
+    };
+  }
+
+  @Post(':id/share-settings')
+  async upsertShareSettings(
+    @Req() req: RequestWithUser,
+    @Param('id') id: string,
+    @Body() body: { enabled: boolean; accessMode?: 'link' | 'password'; password?: string },
+  ) {
+    const media = await this.prisma.media.findFirst({
+      where: { id, ownerId: req.user!.id },
+      select: { id: true },
+    });
+
+    if (!media) {
+      return { error: 'Not found' };
+    }
+
+    const accessMode = body.accessMode === 'password' ? ShareAccessMode.PASSWORD : ShareAccessMode.LINK;
+    if (body.enabled && accessMode === ShareAccessMode.PASSWORD && !body.password?.trim()) {
+      throw new BadRequestException('Password is required for password-protected sharing');
+    }
+
+    const existing = await this.prisma.publicShareAccess.findUnique({
+      where: {
+        resourceType_resourceId: {
+          resourceType: ShareResourceType.MEDIA,
+          resourceId: id,
+        },
+      },
+    });
+
+    const passwordHash =
+      accessMode === ShareAccessMode.PASSWORD && body.password?.trim()
+        ? await bcrypt.hash(body.password.trim(), 10)
+        : accessMode === ShareAccessMode.LINK
+          ? null
+          : existing?.passwordHash || null;
+
+    const token = existing?.token || createOpaqueShareToken();
+
+    const updated = await this.prisma.publicShareAccess.upsert({
+      where: {
+        resourceType_resourceId: {
+          resourceType: ShareResourceType.MEDIA,
+          resourceId: id,
+        },
+      },
+      update: {
+        enabled: Boolean(body.enabled),
+        accessMode,
+        passwordHash,
+      },
+      create: {
+        ownerId: req.user!.id,
+        resourceType: ShareResourceType.MEDIA,
+        resourceId: id,
+        token,
+        enabled: Boolean(body.enabled),
+        accessMode,
+        passwordHash,
+      },
+    });
+
+    return {
+      ok: true,
+      settings: {
+        enabled: updated.enabled,
+        accessMode: updated.accessMode === ShareAccessMode.PASSWORD ? 'password' : 'link',
+        hasPassword: Boolean(updated.passwordHash),
+        token: updated.enabled ? updated.token : null,
+      },
+    };
+  }
+
   @Post('bulk/download')
   async downloadBulk(
     @Req() req: RequestWithUser,
@@ -901,6 +1018,89 @@ export class MediaController {
         albumMedia: true,
       },
     });
+  }
+
+  @Post(':id/copy')
+  async copy(@Req() req: RequestWithUser, @Param('id') id: string) {
+    const source = await this.prisma.media.findFirst({
+      where: { id, ownerId: req.user!.id },
+      include: {
+        mediaTags: true,
+        albumMedia: true,
+      },
+    });
+
+    if (!source) {
+      return { error: 'Not found' };
+    }
+
+    const sourceBody = await this.getObjectBufferFromR2(req.user!.id, source.filePath);
+    const storageExtension = extname(source.filePath) || extname(source.filename) || '.bin';
+    const copyStoragePath = `${randomUUID()}${storageExtension}`;
+
+    await this.uploadBufferToR2(req.user!.id, copyStoragePath, source.mimeType, sourceBody);
+
+    try {
+      const copied = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.media.create({
+          data: {
+            ownerId: source.ownerId,
+            filePath: copyStoragePath,
+            filename: source.filename,
+            relativePath: source.relativePath,
+            isFavorite: source.isFavorite,
+            mimeType: source.mimeType,
+            sizeBytes: source.sizeBytes,
+            width: source.width,
+            height: source.height,
+            adjustments: source.adjustments ?? Prisma.JsonNull,
+            capturedAt: source.capturedAt,
+            metadataCreatedAt: source.metadataCreatedAt,
+            metadataModifiedAt: source.metadataModifiedAt,
+            latitude: source.latitude,
+            longitude: source.longitude,
+          },
+          include: {
+            mediaTags: { include: { tag: true } },
+            albumMedia: true,
+          },
+        });
+
+        const sourceAlbumId = source.albumMedia[0]?.albumId;
+        if (sourceAlbumId) {
+          await tx.albumMedia.create({
+            data: {
+              albumId: sourceAlbumId,
+              mediaId: created.id,
+            },
+          });
+        }
+
+        if (source.mediaTags.length > 0) {
+          await tx.mediaTag.createMany({
+            data: source.mediaTags.map((entry) => ({
+              mediaId: created.id,
+              tagId: entry.tagId,
+            })),
+          });
+        }
+
+        return tx.media.findUnique({
+          where: { id: created.id },
+          include: {
+            mediaTags: { include: { tag: true } },
+            albumMedia: true,
+          },
+        });
+      });
+
+      return copied;
+    } catch (error) {
+      await this.deleteObjectFromR2(req.user!.id, copyStoragePath).catch(() => {
+        return;
+      });
+      throw error;
+    }
   }
 
   @Post(':id/apply-edits')

@@ -1,7 +1,10 @@
-import { Body, Controller, Delete, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/jwt-auth.guard';
+import { createOpaqueShareToken } from '../media/share-token';
+import { ShareAccessMode, ShareResourceType } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 
 @UseGuards(JwtAuthGuard)
 @Controller('albums')
@@ -20,9 +23,48 @@ export class AlbumsController {
       },
     });
 
+    const albumIds = albums.map((album) => album.id);
+    const previewByAlbum = new Map<string, Array<{ id: string; filename: string; mimeType: string }>>();
+
+    if (albumIds.length > 0) {
+      const previewMedia = await this.prisma.media.findMany({
+        where: {
+          ownerId: req.user!.id,
+          albumMedia: {
+            some: {
+              albumId: {
+                in: albumIds,
+              },
+            },
+          },
+        },
+        orderBy: [{ capturedAt: 'desc' }, { createdAt: 'desc' }],
+        select: {
+          id: true,
+          filename: true,
+          mimeType: true,
+          albumMedia: {
+            select: {
+              albumId: true,
+            },
+          },
+        },
+      });
+
+      for (const item of previewMedia) {
+        const albumId = item.albumMedia[0]?.albumId;
+        if (!albumId) continue;
+        const bucket = previewByAlbum.get(albumId) || [];
+        if (bucket.length >= 4) continue;
+        bucket.push({ id: item.id, filename: item.filename, mimeType: item.mimeType });
+        previewByAlbum.set(albumId, bucket);
+      }
+    }
+
     return albums.map((album) => ({
       ...album,
       mediaCount: album._count.albumMedia,
+      previewMedia: previewByAlbum.get(album.id) || [],
     }));
   }
 
@@ -155,5 +197,120 @@ export class AlbumsController {
     }
 
     return { ok: true, moved: availableIds.length };
+  }
+
+  @Get(':id/share-settings')
+  async getShareSettings(@Req() req: RequestWithUser, @Param('id') id: string) {
+    const album = await this.prisma.album.findFirst({
+      where: { id, ownerId: req.user!.id },
+      select: { id: true },
+    });
+
+    if (!album) {
+      return { error: 'Album not found' };
+    }
+
+    const settings = await this.prisma.publicShareAccess.findUnique({
+      where: {
+        resourceType_resourceId: {
+          resourceType: ShareResourceType.ALBUM,
+          resourceId: id,
+        },
+      },
+    });
+
+    if (!settings) {
+      return {
+        ok: true,
+        settings: {
+          enabled: false,
+          accessMode: 'link',
+          hasPassword: false,
+          token: null,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      settings: {
+        enabled: settings.enabled,
+        accessMode: settings.accessMode === ShareAccessMode.PASSWORD ? 'password' : 'link',
+        hasPassword: Boolean(settings.passwordHash),
+        token: settings.enabled ? settings.token : null,
+      },
+    };
+  }
+
+  @Post(':id/share-settings')
+  async upsertShareSettings(
+    @Req() req: RequestWithUser,
+    @Param('id') id: string,
+    @Body() body: { enabled: boolean; accessMode?: 'link' | 'password'; password?: string },
+  ) {
+    const album = await this.prisma.album.findFirst({
+      where: { id, ownerId: req.user!.id },
+      select: { id: true },
+    });
+
+    if (!album) {
+      return { error: 'Album not found' };
+    }
+
+    const accessMode = body.accessMode === 'password' ? ShareAccessMode.PASSWORD : ShareAccessMode.LINK;
+    if (body.enabled && accessMode === ShareAccessMode.PASSWORD && !body.password?.trim()) {
+      throw new BadRequestException('Password is required for password-protected sharing');
+    }
+
+    const existing = await this.prisma.publicShareAccess.findUnique({
+      where: {
+        resourceType_resourceId: {
+          resourceType: ShareResourceType.ALBUM,
+          resourceId: id,
+        },
+      },
+    });
+
+    const passwordHash =
+      accessMode === ShareAccessMode.PASSWORD && body.password?.trim()
+        ? await bcrypt.hash(body.password.trim(), 10)
+        : accessMode === ShareAccessMode.LINK
+          ? null
+          : existing?.passwordHash || null;
+
+    const token = existing?.token || createOpaqueShareToken();
+
+    const updated = await this.prisma.publicShareAccess.upsert({
+      where: {
+        resourceType_resourceId: {
+          resourceType: ShareResourceType.ALBUM,
+          resourceId: id,
+        },
+      },
+      update: {
+        enabled: Boolean(body.enabled),
+        accessMode,
+        passwordHash,
+      },
+      create: {
+        ownerId: req.user!.id,
+        resourceType: ShareResourceType.ALBUM,
+        resourceId: id,
+        token,
+        enabled: Boolean(body.enabled),
+        accessMode,
+        passwordHash,
+      },
+    });
+
+    return {
+      ok: true,
+      settings: {
+        enabled: updated.enabled,
+        accessMode: updated.accessMode === ShareAccessMode.PASSWORD ? 'password' : 'link',
+        hasPassword: Boolean(updated.passwordHash),
+        token: updated.enabled ? updated.token : null,
+      },
+    };
   }
 }

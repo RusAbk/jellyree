@@ -1,5 +1,7 @@
 const API_BASE = 'http://localhost:3000'
 
+export { API_BASE }
+
 export type AuthResult = {
   accessToken: string
   user: {
@@ -40,12 +42,20 @@ export type Album = {
   ownerId: string
   parentId: string | null
   mediaCount: number
+  previewMedia: Array<{ id: string; filename: string; mimeType: string }>
 }
 
 export type Tag = {
   id: string
   name: string
   ownerId: string
+}
+
+export type ShareSettings = {
+  enabled: boolean
+  accessMode: 'link' | 'password'
+  hasPassword: boolean
+  token: string | null
 }
 
 async function request<T>(
@@ -179,6 +189,14 @@ export const api = {
     ),
   deleteMedia: (token: string, mediaId: string) =>
     request(`/media/${mediaId}`, { method: 'DELETE' }, token),
+  copyMedia: (token: string, mediaId: string) =>
+    request<MediaItem>(
+      `/media/${mediaId}/copy`,
+      {
+        method: 'POST',
+      },
+      token,
+    ),
   bulkTag: (token: string, mediaIds: string[], tags: string[]) =>
     request(
       '/media/bulk/tag',
@@ -216,6 +234,21 @@ export const api = {
       token,
     ),
   listAlbums: (token: string) => request<Album[]>('/albums', {}, token),
+  getAlbumShareSettings: (token: string, albumId: string) =>
+    request<{ ok: boolean; settings: ShareSettings }>(`/albums/${albumId}/share-settings`, {}, token),
+  updateAlbumShareSettings: (
+    token: string,
+    albumId: string,
+    payload: { enabled: boolean; accessMode: 'link' | 'password'; password?: string },
+  ) =>
+    request<{ ok: boolean; settings: ShareSettings }>(
+      `/albums/${albumId}/share-settings`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
   createAlbum: (token: string, name: string, description?: string, parentId?: string | null) =>
     request<Album>(
       '/albums',
@@ -250,6 +283,33 @@ export const api = {
       token,
     ),
   listTags: (token: string) => request<Tag[]>('/tags', {}, token),
+  getMediaShareSettings: (token: string, mediaId: string) =>
+    request<{ ok: boolean; settings: ShareSettings }>(`/media/${mediaId}/share-settings`, {}, token),
+  updateMediaShareSettings: (
+    token: string,
+    mediaId: string,
+    payload: { enabled: boolean; accessMode: 'link' | 'password'; password?: string },
+  ) =>
+    request<{ ok: boolean; settings: ShareSettings }>(
+      `/media/${mediaId}/share-settings`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
+  publicMedia: (token: string, password?: string) =>
+    request<{ ok: boolean; media: MediaItem }>(
+      `/public/media/${token}${password ? `?password=${encodeURIComponent(password)}` : ''}`,
+    ),
+  publicAlbum: (token: string, password?: string) =>
+    request<{ ok: boolean; album: { id: string; name: string; description: string | null }; media: MediaItem[] }>(
+      `/public/albums/${token}${password ? `?password=${encodeURIComponent(password)}` : ''}`,
+    ),
+  publicMediaFileUrl: (token: string, password?: string) =>
+    `${API_BASE}/public/media/${token}/file${password ? `?password=${encodeURIComponent(password)}` : ''}`,
+  publicAlbumMediaFileUrl: (token: string, mediaId: string, password?: string) =>
+    `${API_BASE}/public/albums/${token}/media/${mediaId}/file${password ? `?password=${encodeURIComponent(password)}` : ''}`,
   fetchFileBlob: async (token: string, mediaId: string) => {
     const response = await fetch(`${API_BASE}/media/${mediaId}/file`, {
       headers: {
