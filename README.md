@@ -24,6 +24,12 @@ npx prisma migrate dev --name init
 npm run dev:server
 ```
 
+Copy env templates before running:
+```bash
+cp server/.env.example server/.env
+cp web/.env.example web/.env
+```
+
 Add R2 env vars in `server/.env`:
 ```bash
 R2_ACCOUNT_ID=your_cloudflare_account_id
@@ -42,6 +48,12 @@ npm run dev:web
 ## Project structure
 - server: NestJS API + Prisma + SQLite
 - web: Vue 3 + Vite UI
+
+## Deployment notes
+- Frontend API root is configured via `VITE_API_BASE` (see `web/.env.example`)
+- Backend CORS is configured via `CORS_ORIGINS` and `CORS_CREDENTIALS` (see `server/.env.example`)
+- PM2 config example: `ecosystem.config.js`
+- Nginx config example: `deploy/nginx.conf`
 
 ## Notes
 - API: http://localhost:3000

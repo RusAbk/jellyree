@@ -28,6 +28,8 @@ server/.env.*
 web/.env
 web/.env.*
 *.local
+!server/.env.example
+!web/.env.example
 
 # Local databases and Prisma runtime files
 server/dev.db

@@ -96,7 +96,7 @@ const uploadProgress = reactive({
   total: 0,
   percent: 0,
 })
-const activeDetailsField = ref<'filename' | 'tags' | 'album' | null>(null)
+const activeDetailsField = ref<'filename' | 'tags' | 'album' | 'metadataCreatedAt' | 'metadataModifiedAt' | 'location' | null>(null)
 const toast = reactive({
   visible: false,
   text: '',
@@ -122,6 +122,9 @@ let popStateHandler: (() => void) | null = null
 const editor = reactive({
   filename: '',
   tagsInput: '',
+  metadataCreatedAtInput: '',
+  metadataModifiedAtInput: '',
+  locationInput: '',
   brightness: 0,
   contrast: 0,
   saturation: 0,
@@ -482,6 +485,45 @@ function formatDateLabel(value: string | null) {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return '—'
   return parsed.toLocaleString()
+}
+
+function toDateTimeLocalInput(value: string | null) {
+  if (!value) return ''
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return ''
+  const offsetMs = parsed.getTimezoneOffset() * 60_000
+  const local = new Date(parsed.getTime() - offsetMs)
+  return local.toISOString().slice(0, 16)
+}
+
+function fromDateTimeLocalInput(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = new Date(trimmed)
+  if (Number.isNaN(parsed.getTime())) return null
+  return parsed.toISOString()
+}
+
+function formatLocationInput(latitude: number | null, longitude: number | null) {
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') return ''
+  return `${latitude}, ${longitude}`
+}
+
+function parseLocationInput(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return { latitude: null as number | null, longitude: null as number | null }
+  }
+
+  const parts = trimmed.split(',').map((item) => item.trim())
+  if (parts.length !== 2) return null
+
+  const latitude = Number(parts[0])
+  const longitude = Number(parts[1])
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return null
+
+  return { latitude, longitude }
 }
 
 function savePins() {
@@ -999,6 +1041,9 @@ function applyMediaToEditor(item: MediaItem | null) {
   if (!item) return
   editor.filename = splitFilenameParts(item.filename).baseName
   editor.tagsInput = item.mediaTags.map((entry) => entry.tag.name).join(', ')
+  editor.metadataCreatedAtInput = toDateTimeLocalInput(item.metadataCreatedAt)
+  editor.metadataModifiedAtInput = toDateTimeLocalInput(item.metadataModifiedAt)
+  editor.locationInput = formatLocationInput(item.latitude, item.longitude)
   resetEditorAdjustments()
   targetAlbumId.value = item.albumMedia[0]?.albumId || ''
 }
@@ -1415,12 +1460,12 @@ function normalizeTags(input: string) {
   return [...unique].sort()
 }
 
-function beginDetailsFieldEdit(field: 'filename' | 'tags' | 'album') {
+function beginDetailsFieldEdit(field: 'filename' | 'tags' | 'album' | 'metadataCreatedAt' | 'metadataModifiedAt' | 'location') {
   if (!activeMedia.value) return
   activeDetailsField.value = field
 }
 
-function cancelDetailsFieldEdit(field: 'filename' | 'tags' | 'album') {
+function cancelDetailsFieldEdit(field: 'filename' | 'tags' | 'album' | 'metadataCreatedAt' | 'metadataModifiedAt' | 'location') {
   if (!activeMedia.value) {
     activeDetailsField.value = null
     return
@@ -1435,11 +1480,20 @@ function cancelDetailsFieldEdit(field: 'filename' | 'tags' | 'album') {
   if (field === 'album') {
     targetAlbumId.value = activeMedia.value.albumMedia[0]?.albumId || ''
   }
+  if (field === 'metadataCreatedAt') {
+    editor.metadataCreatedAtInput = toDateTimeLocalInput(activeMedia.value.metadataCreatedAt)
+  }
+  if (field === 'metadataModifiedAt') {
+    editor.metadataModifiedAtInput = toDateTimeLocalInput(activeMedia.value.metadataModifiedAt)
+  }
+  if (field === 'location') {
+    editor.locationInput = formatLocationInput(activeMedia.value.latitude, activeMedia.value.longitude)
+  }
 
   activeDetailsField.value = null
 }
 
-async function commitDetailsFieldEdit(field: 'filename' | 'tags' | 'album') {
+async function commitDetailsFieldEdit(field: 'filename' | 'tags' | 'album' | 'metadataCreatedAt' | 'metadataModifiedAt' | 'location') {
   if (!activeMedia.value || !token.value) return
   if (activeDetailsField.value !== field) return
   if (saving.value) return
@@ -1485,6 +1539,51 @@ async function commitDetailsFieldEdit(field: 'filename' | 'tags' | 'album') {
         return
       }
       await api.bulkMoveAlbum(authHeaders(), [mediaId], nextAlbumId)
+    }
+
+    if (field === 'metadataCreatedAt') {
+      const currentValue = activeMedia.value.metadataCreatedAt
+      const nextValue = fromDateTimeLocalInput(editor.metadataCreatedAtInput)
+      if (currentValue === nextValue) {
+        activeDetailsField.value = null
+        return
+      }
+      if (editor.metadataCreatedAtInput.trim() && !nextValue) {
+        throw new Error('Invalid metadata created date')
+      }
+      await api.updateMedia(authHeaders(), mediaId, { metadataCreatedAt: nextValue })
+    }
+
+    if (field === 'metadataModifiedAt') {
+      const currentValue = activeMedia.value.metadataModifiedAt
+      const nextValue = fromDateTimeLocalInput(editor.metadataModifiedAtInput)
+      if (currentValue === nextValue) {
+        activeDetailsField.value = null
+        return
+      }
+      if (editor.metadataModifiedAtInput.trim() && !nextValue) {
+        throw new Error('Invalid metadata modified date')
+      }
+      await api.updateMedia(authHeaders(), mediaId, { metadataModifiedAt: nextValue })
+    }
+
+    if (field === 'location') {
+      const parsed = parseLocationInput(editor.locationInput)
+      if (!parsed) {
+        throw new Error('Location must be in format: latitude, longitude')
+      }
+
+      const currentLatitude = activeMedia.value.latitude
+      const currentLongitude = activeMedia.value.longitude
+      if (currentLatitude === parsed.latitude && currentLongitude === parsed.longitude) {
+        activeDetailsField.value = null
+        return
+      }
+
+      await api.updateMedia(authHeaders(), mediaId, {
+        latitude: parsed.latitude,
+        longitude: parsed.longitude,
+      })
     }
 
     activeDetailsField.value = null
@@ -2453,11 +2552,43 @@ onBeforeUnmount(() => {
           </div>
           <div class="field">
             <label>Metadata created</label>
-            <div class="muted meta-value">{{ activeMediaMetadataCreatedLabel }}</div>
+            <div
+              v-if="activeDetailsField !== 'metadataCreatedAt'"
+              class="inline-edit-value"
+              @click="beginDetailsFieldEdit('metadataCreatedAt')"
+            >
+              {{ activeMediaMetadataCreatedLabel }}
+            </div>
+            <input
+              v-else
+              v-model="editor.metadataCreatedAtInput"
+              class="input"
+              type="datetime-local"
+              autofocus
+              @blur="commitDetailsFieldEdit('metadataCreatedAt')"
+              @keydown.enter.prevent="commitDetailsFieldEdit('metadataCreatedAt')"
+              @keydown.esc.prevent="cancelDetailsFieldEdit('metadataCreatedAt')"
+            />
           </div>
           <div class="field">
             <label>Metadata modified</label>
-            <div class="muted meta-value">{{ activeMediaMetadataModifiedLabel }}</div>
+            <div
+              v-if="activeDetailsField !== 'metadataModifiedAt'"
+              class="inline-edit-value"
+              @click="beginDetailsFieldEdit('metadataModifiedAt')"
+            >
+              {{ activeMediaMetadataModifiedLabel }}
+            </div>
+            <input
+              v-else
+              v-model="editor.metadataModifiedAtInput"
+              class="input"
+              type="datetime-local"
+              autofocus
+              @blur="commitDetailsFieldEdit('metadataModifiedAt')"
+              @keydown.enter.prevent="commitDetailsFieldEdit('metadataModifiedAt')"
+              @keydown.esc.prevent="cancelDetailsFieldEdit('metadataModifiedAt')"
+            />
           </div>
           <div class="field">
             <label>Tags</label>
@@ -2502,25 +2633,34 @@ onBeforeUnmount(() => {
             </select>
           </div>
 
-          <div class="field" v-if="activeMediaAlbum">
-            <label>Current album</label>
-            <div class="chips">
-              <span class="chip-lite">{{ activeMediaAlbum.name }}</span>
-            </div>
-          </div>
-
           <div class="field">
             <label>Metadata location</label>
-            <div class="muted meta-value">{{ activeMediaLocationLabel }}</div>
+            <div
+              v-if="activeDetailsField !== 'location'"
+              class="inline-edit-value"
+              @click="beginDetailsFieldEdit('location')"
+            >
+              {{ activeMediaLocationLabel }}
+            </div>
+            <input
+              v-else
+              v-model="editor.locationInput"
+              class="input"
+              placeholder="latitude, longitude"
+              autofocus
+              @blur="commitDetailsFieldEdit('location')"
+              @keydown.enter.prevent="commitDetailsFieldEdit('location')"
+              @keydown.esc.prevent="cancelDetailsFieldEdit('location')"
+            />
           </div>
 
           <div class="detail-actions">
-            <button class="btn ghost" @click="openEditMode(activeMedia.id)">Edit photo</button>
-            <button class="btn ghost" @click="toggleFavorite(activeMedia.id)">
-              {{ activeMedia.isFavorite ? 'Unfavorite' : 'Favorite' }}
+            <button class="btn ghost detail-action-btn" title="Edit photo" @click="openEditMode(activeMedia.id)">✎</button>
+            <button class="btn ghost detail-action-btn" :title="activeMedia.isFavorite ? 'Unfavorite' : 'Favorite'" @click="toggleFavorite(activeMedia.id)">
+              {{ activeMedia.isFavorite ? '★' : '☆' }}
             </button>
-            <button class="btn ghost" @click="downloadMediaFile(activeMedia.id)">Download</button>
-            <button class="btn ghost danger" @click="deleteMedia(activeMedia.id)">Delete</button>
+            <button class="btn ghost detail-action-btn" title="Download" @click="downloadMediaFile(activeMedia.id)">↓</button>
+            <button class="btn ghost danger detail-action-btn" title="Delete" @click="deleteMedia(activeMedia.id)">🗑</button>
           </div>
 
           <div v-if="message" class="muted">{{ message }}</div>

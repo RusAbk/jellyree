@@ -961,6 +961,10 @@ export class MediaController {
       tags?: string[];
       isFavorite?: boolean;
       capturedAt?: string | null;
+      metadataCreatedAt?: string | null;
+      metadataModifiedAt?: string | null;
+      latitude?: number | null;
+      longitude?: number | null;
     },
   ) {
     const media = await this.prisma.media.findFirst({
@@ -984,11 +988,67 @@ export class MediaController {
       }
     }
 
+    let nextMetadataCreatedAt = media.metadataCreatedAt;
+    if (body.metadataCreatedAt !== undefined) {
+      if (!body.metadataCreatedAt) {
+        nextMetadataCreatedAt = null;
+      } else {
+        const parsedMetadataCreatedAt = normalizeExifDate(body.metadataCreatedAt);
+        if (!parsedMetadataCreatedAt) {
+          throw new BadRequestException('Invalid metadataCreatedAt date');
+        }
+        nextMetadataCreatedAt = parsedMetadataCreatedAt;
+      }
+    }
+
+    let nextMetadataModifiedAt = media.metadataModifiedAt;
+    if (body.metadataModifiedAt !== undefined) {
+      if (!body.metadataModifiedAt) {
+        nextMetadataModifiedAt = null;
+      } else {
+        const parsedMetadataModifiedAt = normalizeExifDate(body.metadataModifiedAt);
+        if (!parsedMetadataModifiedAt) {
+          throw new BadRequestException('Invalid metadataModifiedAt date');
+        }
+        nextMetadataModifiedAt = parsedMetadataModifiedAt;
+      }
+    }
+
+    let nextLatitude = media.latitude;
+    if (body.latitude !== undefined) {
+      if (body.latitude === null) {
+        nextLatitude = null;
+      } else {
+        const parsedLatitude = Number(body.latitude);
+        if (!Number.isFinite(parsedLatitude) || parsedLatitude < -90 || parsedLatitude > 90) {
+          throw new BadRequestException('Invalid latitude');
+        }
+        nextLatitude = parsedLatitude;
+      }
+    }
+
+    let nextLongitude = media.longitude;
+    if (body.longitude !== undefined) {
+      if (body.longitude === null) {
+        nextLongitude = null;
+      } else {
+        const parsedLongitude = Number(body.longitude);
+        if (!Number.isFinite(parsedLongitude) || parsedLongitude < -180 || parsedLongitude > 180) {
+          throw new BadRequestException('Invalid longitude');
+        }
+        nextLongitude = parsedLongitude;
+      }
+    }
+
     const updated = await this.prisma.media.update({
       where: { id },
       data: {
         filename: body.filename?.trim() || media.filename,
         capturedAt: nextCapturedAt,
+        metadataCreatedAt: nextMetadataCreatedAt,
+        metadataModifiedAt: nextMetadataModifiedAt,
+        latitude: nextLatitude,
+        longitude: nextLongitude,
         ...(typeof body.isFavorite === 'boolean'
           ? { isFavorite: body.isFavorite }
           : {}),
