@@ -2,8 +2,8 @@ module.exports = {
   apps: [
     {
       name: 'jellyree-api',
-      cwd: __dirname,
-      script: 'server/dist/main.js',
+      cwd: `${__dirname}/server`,
+      script: 'dist/main.js',
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
