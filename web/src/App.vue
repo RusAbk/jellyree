@@ -136,9 +136,17 @@ const editor = reactive({
   metadataCreatedAtInput: '',
   metadataModifiedAtInput: '',
   locationInput: '',
+  temperature: 0,
   brightness: 0,
   contrast: 0,
   saturation: 0,
+  toneDepth: 0,
+  shadowsLevel: 0,
+  highlightsLevel: 0,
+  sharpness: 0,
+  definition: 0,
+  vignette: 0,
+  glamour: 0,
   grayscale: 0,
   sepia: 0,
   cropZoom: 0,
@@ -1349,7 +1357,8 @@ function startUploadProgress(fileCount: number) {
 function updateUploadProgress(loaded: number, total: number) {
   uploadProgress.loaded = loaded
   uploadProgress.total = total
-  uploadProgress.percent = total > 0 ? Math.max(0, Math.min(100, Math.round((loaded / total) * 100))) : 0
+  const rawPercent = total > 0 ? Math.round((loaded / total) * 100) : 0
+  uploadProgress.percent = Math.max(0, Math.min(99, rawPercent))
 }
 
 function finishUploadProgress() {
@@ -2007,9 +2016,17 @@ async function applyImageEditsPermanently() {
   try {
     const mediaId = activeMedia.value.id
     await api.applyMediaEdits(authHeaders(), mediaId, {
+      temperature: editor.temperature,
       brightness: editor.brightness,
       contrast: editor.contrast,
       saturation: editor.saturation,
+      toneDepth: editor.toneDepth,
+      shadowsLevel: editor.shadowsLevel,
+      highlightsLevel: editor.highlightsLevel,
+      sharpness: editor.sharpness,
+      definition: editor.definition,
+      vignette: editor.vignette,
+      glamour: editor.glamour,
       grayscale: editor.grayscale,
       sepia: editor.sepia,
       cropZoom: editor.cropZoom,
@@ -2057,17 +2074,36 @@ function mediaFilterStyle(_item?: MediaItem) {
 }
 
 function mediaFilterStyleFromEditor() {
+  const temperature = Number(editor.temperature || 0)
   const brightness = 100 + Number(editor.brightness || 0)
   const contrast = 100 + Number(editor.contrast || 0)
   const saturation = 100 + Number(editor.saturation || 0)
+  const toneDepth = Number(editor.toneDepth || 0)
+  const shadowsLevel = Number(editor.shadowsLevel || 0)
+  const highlightsLevel = Number(editor.highlightsLevel || 0)
+  const sharpness = Number(editor.sharpness || 0)
+  const definition = Number(editor.definition || 0)
+  const glamour = Number(editor.glamour || 0)
   const zoom = 1 + Number(editor.cropZoom || 0) / 100
   const rotate = Number(editor.rotate || 0)
   const flipX = editor.flipX ? -1 : 1
   const flipY = editor.flipY ? -1 : 1
   const grayscale = Number(editor.grayscale || 0)
   const sepia = Number(editor.sepia || 0)
+  const warmTint = Math.max(0, temperature / 100)
+  const coolTint = Math.max(0, -temperature / 100)
+  const depthContrast = toneDepth / 2.2
+  const liftedBrightness = shadowsLevel / 2.4
+  const reducedHighlights = -highlightsLevel / 2.6
+  const glamourBlur = Math.max(0, glamour / 35)
+  const definitionContrast = definition / 3
+  const detailContrast = sharpness / 2.8
+  const finalContrast = contrast + depthContrast + definitionContrast + detailContrast
+  const finalBrightness = brightness + liftedBrightness + reducedHighlights
+  const finalSaturation = saturation + warmTint * 6 - coolTint * 4
+  const finalSepia = Math.max(0, sepia + warmTint * 10)
   return {
-    filter: `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) grayscale(${grayscale}%) sepia(${sepia}%)`,
+    filter: `brightness(${finalBrightness}%) contrast(${finalContrast}%) saturate(${finalSaturation}%) grayscale(${grayscale}%) sepia(${finalSepia}%) hue-rotate(${temperature * 0.25}deg) blur(${glamourBlur}px)`,
     transform: `scale(${zoom}) rotate(${rotate}deg) scaleX(${flipX}) scaleY(${flipY})`,
     clipPath: `inset(${editor.cropY}% ${100 - editor.cropX - editor.cropWidth}% ${100 - editor.cropY - editor.cropHeight}% ${editor.cropX}%)`,
   }
@@ -2078,9 +2114,17 @@ function mediaDetailsStyle(_item?: MediaItem) {
 }
 
 function resetEditorAdjustments() {
+  editor.temperature = 0
   editor.brightness = 0
   editor.contrast = 0
   editor.saturation = 0
+  editor.toneDepth = 0
+  editor.shadowsLevel = 0
+  editor.highlightsLevel = 0
+  editor.sharpness = 0
+  editor.definition = 0
+  editor.vignette = 0
+  editor.glamour = 0
   editor.grayscale = 0
   editor.sepia = 0
   editor.cropZoom = 0
@@ -2952,6 +2996,10 @@ onBeforeUnmount(() => {
 
           <div class="editor-controls">
             <div class="slider-row">
+              <span>Temperature</span>
+              <input v-model="editor.temperature" type="range" min="-100" max="100" />
+            </div>
+            <div class="slider-row">
               <span>Brightness</span>
               <input v-model="editor.brightness" type="range" min="-60" max="60" />
             </div>
@@ -2960,8 +3008,36 @@ onBeforeUnmount(() => {
               <input v-model="editor.contrast" type="range" min="-60" max="60" />
             </div>
             <div class="slider-row">
-              <span>Color</span>
+              <span>Saturation</span>
               <input v-model="editor.saturation" type="range" min="-60" max="60" />
+            </div>
+            <div class="slider-row">
+              <span>Tone depth</span>
+              <input v-model="editor.toneDepth" type="range" min="-100" max="100" />
+            </div>
+            <div class="slider-row">
+              <span>Shadows level</span>
+              <input v-model="editor.shadowsLevel" type="range" min="-100" max="100" />
+            </div>
+            <div class="slider-row">
+              <span>Highlights level</span>
+              <input v-model="editor.highlightsLevel" type="range" min="-100" max="100" />
+            </div>
+            <div class="slider-row">
+              <span>Sharpness</span>
+              <input v-model="editor.sharpness" type="range" min="0" max="100" />
+            </div>
+            <div class="slider-row">
+              <span>Definition</span>
+              <input v-model="editor.definition" type="range" min="-100" max="100" />
+            </div>
+            <div class="slider-row">
+              <span>Vignette</span>
+              <input v-model="editor.vignette" type="range" min="0" max="100" />
+            </div>
+            <div class="slider-row">
+              <span>Glamour</span>
+              <input v-model="editor.glamour" type="range" min="0" max="100" />
             </div>
             <div class="slider-row">
               <span>Grayscale</span>

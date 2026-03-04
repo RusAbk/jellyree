@@ -127,6 +127,7 @@ export const api = {
       const xhr = new XMLHttpRequest()
       xhr.open('POST', `${API_BASE}/media/upload`)
       xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      xhr.timeout = 180000
 
       xhr.upload.onprogress = (event) => {
         if (!onProgress || !event.lengthComputable) return
@@ -135,7 +136,13 @@ export const api = {
 
       xhr.onload = () => {
         const raw = xhr.responseText || '{}'
-        const data = JSON.parse(raw || '{}') as { message?: string; error?: string }
+        let data: { message?: string; error?: string } = {}
+
+        try {
+          data = JSON.parse(raw || '{}') as { message?: string; error?: string }
+        } catch {
+          data = { message: raw?.trim() || `Upload failed (HTTP ${xhr.status})` }
+        }
 
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve(data as { ok: boolean; created: MediaItem[] })
@@ -146,6 +153,8 @@ export const api = {
       }
 
       xhr.onerror = () => reject(new Error('Upload failed'))
+      xhr.onabort = () => reject(new Error('Upload was aborted'))
+      xhr.ontimeout = () => reject(new Error('Upload timed out while waiting for server response'))
       xhr.send(formData)
     })
   },
