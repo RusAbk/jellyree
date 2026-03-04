@@ -555,6 +555,7 @@ body {
   margin: 0 0 12px;
   border-radius: 0;
   overflow: hidden;
+  max-height: calc(100dvh - 72px);
   border: 1px solid var(--border);
   background: var(--bg-3);
   box-shadow: 0 8px 20px rgba(52, 72, 120, 0.14);
@@ -739,11 +740,17 @@ body {
 
 .photo-img {
   width: 100%;
+  max-height: calc(100dvh - 72px);
   display: block;
+  object-fit: contain;
   border-radius: 0;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+}
+
+.photo-fallback {
+  max-height: calc(100dvh - 72px);
 }
 
 .photo-card,
