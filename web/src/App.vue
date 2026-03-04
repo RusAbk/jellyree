@@ -164,6 +164,7 @@ const editor = reactive({
 })
 
 type EditorMobileTab =
+  | 'previewScale'
   | 'temperature'
   | 'brightness'
   | 'contrast'
@@ -183,6 +184,7 @@ type EditorMobileTab =
 
 const activeEditorMobileTab = ref<EditorMobileTab>('temperature')
 const editorMobileTabs: Array<{ key: EditorMobileTab; label: string }> = [
+  { key: 'previewScale', label: 'Scale' },
   { key: 'temperature', label: 'Temp' },
   { key: 'brightness', label: 'Bright' },
   { key: 'contrast', label: 'Contrast' },
@@ -383,6 +385,12 @@ const editorCropRectStyle = computed(() => ({
   top: `${editor.cropY}%`,
   width: `${editor.cropWidth}%`,
   height: `${editor.cropHeight}%`,
+}))
+
+const editorPreviewScale = ref(100)
+const editorPreviewFrameStyle = computed(() => ({
+  transform: `scale(${editorPreviewScale.value / 100})`,
+  transformOrigin: 'center center',
 }))
 
 function authHeaders() {
@@ -1419,6 +1427,7 @@ function openEditMode(mediaId?: string) {
     selectMedia(mediaId)
   }
   if (!activeMedia.value) return
+  editorPreviewScale.value = 100
   mobileDetailsOpen.value = false
   activeEditorMobileTab.value = 'temperature'
   editModeOpen.value = true
@@ -3140,7 +3149,7 @@ onBeforeUnmount(() => {
                 @pointercancel="stopCropDrag"
                 @pointerleave="stopCropDrag"
               >
-                <div ref="editorCropStage" class="editor-image-frame">
+                <div ref="editorCropStage" class="editor-image-frame" :style="editorPreviewFrameStyle">
                   <img
                     class="overlay-image editor-image"
                     :src="thumbs[activeMedia.id]"
@@ -3169,6 +3178,7 @@ onBeforeUnmount(() => {
 
           <aside class="editor-sidebar">
             <div class="editor-controls">
+              <div class="slider-row"><span>Preview scale</span><input v-model="editorPreviewScale" type="range" min="25" max="300" /></div>
               <div class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
               <div class="slider-row"><span>Brightness</span><input v-model="editor.brightness" type="range" min="-60" max="60" /></div>
               <div class="slider-row"><span>Contrast</span><input v-model="editor.contrast" type="range" min="-60" max="60" /></div>
@@ -3218,7 +3228,8 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="editor-mobile-control">
-            <div v-if="activeEditorMobileTab === 'temperature'" class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
+            <div v-if="activeEditorMobileTab === 'previewScale'" class="slider-row"><span>Preview scale</span><input v-model="editorPreviewScale" type="range" min="25" max="300" /></div>
+            <div v-else-if="activeEditorMobileTab === 'temperature'" class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
             <div v-else-if="activeEditorMobileTab === 'brightness'" class="slider-row"><span>Brightness</span><input v-model="editor.brightness" type="range" min="-60" max="60" /></div>
             <div v-else-if="activeEditorMobileTab === 'contrast'" class="slider-row"><span>Contrast</span><input v-model="editor.contrast" type="range" min="-60" max="60" /></div>
             <div v-else-if="activeEditorMobileTab === 'saturation'" class="slider-row"><span>Saturation</span><input v-model="editor.saturation" type="range" min="-60" max="60" /></div>
