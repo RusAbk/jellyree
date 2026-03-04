@@ -8,6 +8,8 @@ type AlbumTreeNode = {
   hasChildren: boolean
 }
 
+type MobileMenuScreen = 'main' | 'library' | 'bulk'
+
 const token = ref(localStorage.getItem('jellyree_token') || '')
 const userName = ref(localStorage.getItem('jellyree_user') || '')
 const mode = ref<'login' | 'register'>('login')
@@ -51,6 +53,10 @@ const createAlbumBusy = ref(false)
 const fabMenuOpen = ref(false)
 const createAlbumDialogOpen = ref(false)
 const mobileDetailsOpen = ref(false)
+const mobileSelectMode = ref(false)
+const mobileUserMenuOpen = ref(false)
+const mobileMenuScreen = ref<MobileMenuScreen>('main')
+const isMobileViewport = ref(false)
 const pinnedAlbumIds = ref<string[]>(JSON.parse(localStorage.getItem('jellyree_pins') || '[]'))
 const draggedPinnedId = ref<string | null>(null)
 const draggedAlbumId = ref<string | null>(null)
@@ -333,8 +339,10 @@ const selectedMediaSet = computed(() => new Set(selectedMediaIds.value))
 const visibleSubalbums = computed(() => {
   if (activeSection.value !== 'all') return []
   const parentId = activeAlbumId.value || null
+  const q = search.value.trim().toLowerCase()
   return albums.value
     .filter((album) => (album.parentId || null) === parentId)
+    .filter((album) => !q || album.name.toLowerCase().includes(q))
     .sort((a, b) => a.name.localeCompare(b.name))
 })
 const albumPreviewMediaById = computed(() => {
@@ -895,6 +903,23 @@ function finishMediaTouch(mediaId: string) {
   cancelTouchGesture()
   if (skipTapAction) return
 
+  if (isMobileViewport.value && mobileSelectMode.value) {
+    if (selectedMediaSet.value.has(mediaId)) {
+      selectedMediaIds.value = selectedMediaIds.value.filter((id) => id !== mediaId)
+      if (activeMediaId.value === mediaId) {
+        activeMediaId.value = selectedMediaIds.value[0] || null
+      }
+      if (selectedMediaIds.value.length === 0) {
+        mobileSelectMode.value = false
+      }
+    } else {
+      selectedMediaIds.value = [...selectedMediaIds.value, mediaId]
+      activeMediaId.value = mediaId
+      void loadThumb(mediaId)
+    }
+    return
+  }
+
   openLightbox(mediaId)
 }
 
@@ -911,6 +936,24 @@ function finishAlbumTouch(albumId: string) {
 
 function onMediaCardClick(mediaId: string, event: MouseEvent) {
   if (isTouchUi.value) return
+
+  if (isMobileViewport.value && mobileSelectMode.value) {
+    if (selectedMediaSet.value.has(mediaId)) {
+      selectedMediaIds.value = selectedMediaIds.value.filter((id) => id !== mediaId)
+      if (activeMediaId.value === mediaId) {
+        activeMediaId.value = selectedMediaIds.value[0] || null
+      }
+      if (selectedMediaIds.value.length === 0) {
+        mobileSelectMode.value = false
+      }
+    } else {
+      selectedMediaIds.value = [...selectedMediaIds.value, mediaId]
+      activeMediaId.value = mediaId
+      void loadThumb(mediaId)
+    }
+    return
+  }
+
   selectMedia(mediaId, event)
 }
 
@@ -1131,7 +1174,12 @@ function onGlobalPointerDown(event: PointerEvent) {
   const target = event.target as HTMLElement | null
   if (!target) {
     closeContextMenus()
+    closeMobileUserMenu()
     return
+  }
+
+  if (!target.closest('.mobile-menu-fullscreen') && !target.closest('.hamburger-btn')) {
+    closeMobileUserMenu()
   }
 
   if (target.closest('.context-menu-floating') || target.closest('.menu-dots-btn')) {
@@ -1468,6 +1516,50 @@ function closeFabMenu() {
   fabMenuOpen.value = false
 }
 
+function toggleMobileSelectMode() {
+  mobileSelectMode.value = !mobileSelectMode.value
+  if (!mobileSelectMode.value) {
+    selectedMediaIds.value = []
+  }
+}
+
+function cancelMobileSelection() {
+  mobileSelectMode.value = false
+  selectedMediaIds.value = []
+}
+
+function toggleMobileUserMenu() {
+  if (mobileUserMenuOpen.value) {
+    mobileUserMenuOpen.value = false
+    mobileMenuScreen.value = 'main'
+    return
+  }
+
+  mobileMenuScreen.value = 'main'
+  mobileUserMenuOpen.value = true
+}
+
+function closeMobileUserMenu() {
+  mobileUserMenuOpen.value = false
+  mobileMenuScreen.value = 'main'
+}
+
+function openMobileMenuScreen(screen: MobileMenuScreen) {
+  mobileMenuScreen.value = screen
+}
+
+function updateLayoutFlags() {
+  isTouchUi.value =
+    window.matchMedia('(pointer: coarse)').matches ||
+    'ontouchstart' in window ||
+    navigator.maxTouchPoints > 0
+  isMobileViewport.value = window.innerWidth <= 1080
+  if (!isMobileViewport.value) {
+    mobileSelectMode.value = false
+    closeMobileUserMenu()
+  }
+}
+
 function openCreateAlbumDialog() {
   closeFabMenu()
   createAlbumDialogOpen.value = true
@@ -1635,6 +1727,9 @@ async function handleDrop(event: DragEvent) {
 
 function clearSelection() {
   selectedMediaIds.value = []
+  if (isMobileViewport.value) {
+    mobileSelectMode.value = false
+  }
 }
 
 function startMarqueeSelect(event: PointerEvent) {
@@ -2359,6 +2454,11 @@ function onCropPointerMove(event: PointerEvent) {
 }
 
 function onKeyDown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && mobileUserMenuOpen.value) {
+    closeMobileUserMenu()
+    return
+  }
+
   if (event.key === 'Escape' && (albumContextMenu.open || mediaContextMenu.open)) {
     closeContextMenus()
     return
@@ -2472,10 +2572,7 @@ watch([activeAlbumId, activeMediaId, token, routeMode], () => {
 })
 
 onMounted(async () => {
-  isTouchUi.value =
-    window.matchMedia('(pointer: coarse)').matches ||
-    'ontouchstart' in window ||
-    navigator.maxTouchPoints > 0
+  updateLayoutFlags()
 
   popStateHandler = () => {
     void applyRouteFromLocation()
@@ -2487,6 +2584,7 @@ onMounted(async () => {
   window.addEventListener('pointermove', onWindowPointerMove)
   window.addEventListener('pointerup', onWindowPointerUp)
   window.addEventListener('pointerdown', onGlobalPointerDown)
+  window.addEventListener('resize', updateLayoutFlags)
   if (!token.value) {
     await applyRouteFromLocation()
     return
@@ -2514,6 +2612,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointermove', onWindowPointerMove)
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointerdown', onGlobalPointerDown)
+  window.removeEventListener('resize', updateLayoutFlags)
   if (toastTimer) {
     clearTimeout(toastTimer)
   }
@@ -2640,11 +2739,14 @@ onBeforeUnmount(() => {
           </div>
           <div class="topbar-badge">{{ filteredMedia.length }} photos</div>
         </div>
-        <div class="search shell">
+        <div v-if="!isMobileViewport" class="search shell">
           <input v-model="search" placeholder="Search in current view" />
         </div>
         <div class="topbar-right">
-          <button class="btn ghost" @click="logout">Logout</button>
+          <button class="chip hamburger-btn mobile-only" @click="toggleMobileUserMenu">
+            <i class="ri-menu-line" aria-hidden="true"></i>
+          </button>
+          <button class="btn ghost desktop-only" @click="logout">Logout</button>
           <input
             ref="fileInput"
             type="file"
@@ -2655,8 +2757,130 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
+      <div v-if="mobileUserMenuOpen && isMobileViewport" class="mobile-menu-fullscreen">
+        <div class="mobile-menu-screen">
+          <div class="mobile-menu-header">
+            <button v-if="mobileMenuScreen !== 'main'" class="chip" @click="openMobileMenuScreen('main')">
+              <i class="ri-arrow-left-line" aria-hidden="true"></i>
+              Back
+            </button>
+            <div class="mobile-menu-title">
+              {{ mobileMenuScreen === 'main' ? 'Menu' : (mobileMenuScreen === 'library' ? 'Library' : 'Bulk actions') }}
+            </div>
+            <button class="chip" @click="closeMobileUserMenu">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+          </div>
+
+          <div v-if="mobileMenuScreen === 'main'" class="mobile-menu-main-list">
+            <div class="search shell mobile-menu-search">
+              <i class="ri-search-line" aria-hidden="true"></i>
+              <input v-model="search" placeholder="Search photos and albums" />
+            </div>
+            <button class="mobile-screen-item" @click="toggleMobileSelectMode; closeMobileUserMenu()">
+              <i class="ri-checkbox-multiple-line" aria-hidden="true"></i>
+              <span>{{ mobileSelectMode ? 'Stop select mode' : 'Select files' }}</span>
+            </button>
+            <button v-if="selectedCount > 0" class="mobile-screen-item" @click="cancelMobileSelection; closeMobileUserMenu()">
+              <i class="ri-close-circle-line" aria-hidden="true"></i>
+              <span>Cancel selection</span>
+            </button>
+            <button class="mobile-screen-item" @click="openMobileMenuScreen('library')">
+              <i class="ri-book-2-line" aria-hidden="true"></i>
+              <span>Library</span>
+            </button>
+            <button class="mobile-screen-item" @click="openMobileMenuScreen('bulk')">
+              <i class="ri-stack-line" aria-hidden="true"></i>
+              <span>Bulk actions</span>
+            </button>
+            <button class="mobile-screen-item danger" @click="logout">
+              <i class="ri-logout-box-r-line" aria-hidden="true"></i>
+              <span>Logout</span>
+            </button>
+          </div>
+
+          <div v-else-if="mobileMenuScreen === 'library'" class="mobile-screen-scroll">
+            <div class="mobile-menu-subtitle">Main</div>
+            <button class="mobile-screen-item" @click="activeSection = 'favorites'; closeMobileUserMenu()">
+              <i class="ri-star-line" aria-hidden="true"></i>
+              <span>Favorites</span>
+            </button>
+            <button class="mobile-screen-item" @click="activeSection = 'all'; goRoot(); closeMobileUserMenu()">
+              <i class="ri-image-2-line" aria-hidden="true"></i>
+              <span>All photos</span>
+            </button>
+
+            <div class="mobile-menu-subtitle" v-if="pinnedAlbums.length > 0">Pinned</div>
+            <button
+              v-for="album in pinnedAlbums"
+              :key="`menu-pin-${album.id}`"
+              class="mobile-screen-item"
+              @click="openAlbum(album.id); closeMobileUserMenu()"
+            >
+              <i class="ri-folder-2-line" aria-hidden="true"></i>
+              <span>{{ album.name }}</span>
+            </button>
+
+            <div class="mobile-menu-subtitle">Albums</div>
+            <button
+              v-for="node in albumTree"
+              :key="`menu-album-${node.album.id}`"
+              class="mobile-screen-item"
+              @click="openAlbum(node.album.id); closeMobileUserMenu()"
+            >
+              <i class="ri-folder-line" aria-hidden="true"></i>
+              <span>{{ '· '.repeat(node.depth) }}{{ node.album.name }}</span>
+            </button>
+
+            <div class="mobile-menu-subtitle" v-if="sortedTags.length > 0">Tags</div>
+            <button
+              v-for="tag in sortedTags"
+              :key="`menu-tag-${tag.id}`"
+              class="mobile-screen-item"
+              @click="openTag(tag.id); closeMobileUserMenu()"
+            >
+              <i class="ri-price-tag-3-line" aria-hidden="true"></i>
+              <span>{{ tag.name }}</span>
+            </button>
+          </div>
+
+          <div v-else class="mobile-screen-scroll">
+            <select v-model="bulkTargetAlbumId" class="input bulk-select">
+              <option value="">Move selected to album…</option>
+              <option v-for="album in albums" :key="`menu-bulk-${album.id}`" :value="album.id">
+                {{ album.name }}
+              </option>
+            </select>
+            <button class="mobile-screen-item" :disabled="selectedCount === 0 || !bulkTargetAlbumId" @click="bulkMoveSelectedToAlbum; closeMobileUserMenu()">
+              <i class="ri-folder-transfer-line" aria-hidden="true"></i>
+              <span>Move selected</span>
+            </button>
+            <button class="mobile-screen-item" :disabled="selectedCount === 0" @click="bulkSetFavorite(true); closeMobileUserMenu()">
+              <i class="ri-star-line" aria-hidden="true"></i>
+              <span>Favorite selected</span>
+            </button>
+            <button class="mobile-screen-item" :disabled="selectedCount === 0" @click="bulkSetFavorite(false); closeMobileUserMenu()">
+              <i class="ri-star-off-line" aria-hidden="true"></i>
+              <span>Unfavorite selected</span>
+            </button>
+            <button class="mobile-screen-item" :disabled="selectedCount === 0" @click="downloadSelectedAsZip; closeMobileUserMenu()">
+              <i class="ri-download-2-line" aria-hidden="true"></i>
+              <span>Download selected</span>
+            </button>
+            <button class="mobile-screen-item danger" :disabled="selectedCount === 0" @click="bulkDeleteSelected; closeMobileUserMenu()">
+              <i class="ri-delete-bin-line" aria-hidden="true"></i>
+              <span>Delete selected</span>
+            </button>
+            <button class="mobile-screen-item" :disabled="selectedCount === 0" @click="clearSelection; closeMobileUserMenu()">
+              <i class="ri-close-circle-line" aria-hidden="true"></i>
+              <span>Clear selection</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div class="workspace" @dragover.prevent @drop.prevent.stop="handleDrop">
-        <aside class="sidebar">
+        <aside v-if="!isMobileViewport" class="sidebar">
           <div class="side-group">
             <div class="side-title">Library</div>
             <button
@@ -2760,7 +2984,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="gallery-toolbar shell">
+          <div v-if="!isMobileViewport" class="gallery-toolbar shell">
             <div class="row-actions">
               <select v-model="bulkTargetAlbumId" class="input bulk-select">
                 <option value="">Move selected to album…</option>
@@ -2832,7 +3056,7 @@ onBeforeUnmount(() => {
               :key="item.id"
               class="photo-card"
               :data-media-id="item.id"
-              :class="{ active: activeMediaId === item.id, selected: selectedMediaSet.has(item.id), 'long-press-pending': isLongPressPending('media', item.id) }"
+              :class="{ active: activeMediaId === item.id, selected: selectedMediaSet.has(item.id), 'long-press-pending': isLongPressPending('media', item.id), 'select-mode': isMobileViewport && mobileSelectMode }"
               draggable="true"
               @dragstart="onMediaDragStart(item.id, $event)"
               @dragend="onMediaDragEnd"
@@ -2844,6 +3068,9 @@ onBeforeUnmount(() => {
               @touchend="finishMediaTouch(item.id)"
               @touchcancel="cancelTouchGesture"
             >
+              <div v-if="isMobileViewport && mobileSelectMode" class="card-select-indicator" :class="{ selected: selectedMediaSet.has(item.id) }">
+                <i v-if="selectedMediaSet.has(item.id)" class="ri-check-line" aria-hidden="true"></i>
+              </div>
               <button class="card-menu-btn menu-dots-btn" @click.stop="openMediaContextMenu($event, item.id)">
                 ⋯
               </button>
