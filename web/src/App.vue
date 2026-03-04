@@ -49,6 +49,7 @@ const createAlbumName = ref('')
 const createAlbumBusy = ref(false)
 const fabMenuOpen = ref(false)
 const createAlbumDialogOpen = ref(false)
+const mobileDetailsOpen = ref(false)
 const pinnedAlbumIds = ref<string[]>(JSON.parse(localStorage.getItem('jellyree_pins') || '[]'))
 const draggedPinnedId = ref<string | null>(null)
 const draggedAlbumId = ref<string | null>(null)
@@ -158,6 +159,44 @@ const editor = reactive({
   cropWidth: 100,
   cropHeight: 100,
 })
+
+type EditorMobileTab =
+  | 'temperature'
+  | 'brightness'
+  | 'contrast'
+  | 'saturation'
+  | 'toneDepth'
+  | 'shadowsLevel'
+  | 'highlightsLevel'
+  | 'sharpness'
+  | 'definition'
+  | 'vignette'
+  | 'glamour'
+  | 'grayscale'
+  | 'sepia'
+  | 'cropZoom'
+  | 'rotate'
+  | 'mirror'
+
+const activeEditorMobileTab = ref<EditorMobileTab>('temperature')
+const editorMobileTabs: Array<{ key: EditorMobileTab; label: string }> = [
+  { key: 'temperature', label: 'Temp' },
+  { key: 'brightness', label: 'Bright' },
+  { key: 'contrast', label: 'Contrast' },
+  { key: 'saturation', label: 'Sat' },
+  { key: 'toneDepth', label: 'Depth' },
+  { key: 'shadowsLevel', label: 'Shadows' },
+  { key: 'highlightsLevel', label: 'Highlights' },
+  { key: 'sharpness', label: 'Sharp' },
+  { key: 'definition', label: 'Def' },
+  { key: 'vignette', label: 'Vignette' },
+  { key: 'glamour', label: 'Glamour' },
+  { key: 'grayscale', label: 'Gray' },
+  { key: 'sepia', label: 'Sepia' },
+  { key: 'cropZoom', label: 'Zoom' },
+  { key: 'rotate', label: 'Rotate' },
+  { key: 'mirror', label: 'Mirror' },
+]
 
 const cropDrag = reactive({
   active: false,
@@ -987,6 +1026,14 @@ function contextEditMedia() {
   openEditMode(item.id)
 }
 
+function contextOpenMediaDetails() {
+  const item = mediaFromContext()
+  closeContextMenus()
+  if (!item) return
+  selectMedia(item.id)
+  mobileDetailsOpen.value = true
+}
+
 function contextToggleMediaFavorite() {
   const item = mediaFromContext()
   closeContextMenus()
@@ -1280,6 +1327,7 @@ function selectMedia(mediaId: string, event?: MouseEvent, pushRoute = true) {
 }
 
 function openLightbox(mediaId: string) {
+  mobileDetailsOpen.value = false
   selectMedia(mediaId)
   lightboxOpen.value = true
 }
@@ -1293,6 +1341,8 @@ function openEditMode(mediaId?: string) {
     selectMedia(mediaId)
   }
   if (!activeMedia.value) return
+  mobileDetailsOpen.value = false
+  activeEditorMobileTab.value = 'temperature'
   editModeOpen.value = true
   closeContextMenus()
 }
@@ -2294,6 +2344,9 @@ watch([activeAlbumId, activeSection, search], () => {
 
 watch(activeMedia, (item) => {
   applyMediaToEditor(item)
+  if (!item) {
+    mobileDetailsOpen.value = false
+  }
   if (item) {
     void loadThumb(item.id)
   }
@@ -2716,8 +2769,11 @@ onBeforeUnmount(() => {
           </div>
         </main>
 
-        <aside class="details" v-if="activeMedia">
-          <div class="details-title">Photo details</div>
+        <aside class="details" :class="{ 'mobile-details-open': mobileDetailsOpen }" v-if="activeMedia">
+          <div class="details-head">
+            <div class="details-title">Photo details</div>
+            <button v-if="mobileDetailsOpen" class="chip" @click="mobileDetailsOpen = false">Close</button>
+          </div>
           <div class="details-preview">
             <img
               v-if="thumbs[activeMedia.id] && canPreviewInBrowser(activeMedia)"
@@ -2886,6 +2942,7 @@ onBeforeUnmount(() => {
         :style="{ left: `${mediaContextMenu.x}px`, top: `${mediaContextMenu.y}px` }"
       >
         <button @click="contextOpenMedia">Open</button>
+        <button @click="contextOpenMediaDetails">Details</button>
         <button @click="contextEditMedia">Edit photo</button>
         <button @click="contextCopyMedia">Create copy</button>
         <button @click="contextShareMedia">Public access settings…</button>
@@ -2952,110 +3009,120 @@ onBeforeUnmount(() => {
         <button v-if="lightboxItems.length > 1" class="overlay-arrow right" @click.stop="nextLightbox">›</button>
       </div>
 
-      <div v-if="editModeOpen && activeMedia" class="overlay" @click.self="closeEditMode">
-        <div class="editor-modal">
-          <div class="editor-head">
+      <div v-if="editModeOpen && activeMedia" class="editor-fullscreen">
+        <div class="editor-head editor-head-full">
+          <div>
             <div class="details-title">Photo editor</div>
-            <button class="chip" @click="closeEditMode">Close</button>
+            <div class="muted">{{ activeMedia.filename }}</div>
+          </div>
+          <button class="chip" @click="closeEditMode">Close</button>
+        </div>
+
+        <div class="editor-layout">
+          <div class="editor-canvas">
+            <div class="editor-preview">
+              <div
+                v-if="thumbs[activeMedia.id] && canPreviewInBrowser(activeMedia)"
+                class="editor-crop-stage"
+                @pointermove="onCropPointerMove"
+                @pointerup="stopCropDrag"
+                @pointercancel="stopCropDrag"
+                @pointerleave="stopCropDrag"
+              >
+                <div ref="editorCropStage" class="editor-image-frame">
+                  <img
+                    class="overlay-image editor-image"
+                    :src="thumbs[activeMedia.id]"
+                    :alt="activeMedia.filename"
+                    :style="mediaFilterStyleFromEditor()"
+                  />
+                  <div class="crop-rect" :style="editorCropRectStyle" @pointerdown="startCropDrag($event, 'move')">
+                    <span class="crop-grid v1"></span>
+                    <span class="crop-grid v2"></span>
+                    <span class="crop-grid h1"></span>
+                    <span class="crop-grid h2"></span>
+                    <span class="crop-handle nw" @pointerdown.stop="startCropDrag($event, 'nw')"></span>
+                    <span class="crop-handle ne" @pointerdown.stop="startCropDrag($event, 'ne')"></span>
+                    <span class="crop-handle sw" @pointerdown.stop="startCropDrag($event, 'sw')"></span>
+                    <span class="crop-handle se" @pointerdown.stop="startCropDrag($event, 'se')"></span>
+                    <span class="crop-handle n" @pointerdown.stop="startCropDrag($event, 'n')"></span>
+                    <span class="crop-handle s" @pointerdown.stop="startCropDrag($event, 's')"></span>
+                    <span class="crop-handle w" @pointerdown.stop="startCropDrag($event, 'w')"></span>
+                    <span class="crop-handle e" @pointerdown.stop="startCropDrag($event, 'e')"></span>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="overlay-fallback">Preview unavailable for this format</div>
+            </div>
           </div>
 
-          <div class="editor-preview">
-            <div
-              v-if="thumbs[activeMedia.id] && canPreviewInBrowser(activeMedia)"
-              class="editor-crop-stage"
-              @pointermove="onCropPointerMove"
-              @pointerup="stopCropDrag"
-              @pointercancel="stopCropDrag"
-              @pointerleave="stopCropDrag"
-            >
-              <div ref="editorCropStage" class="editor-image-frame">
-                <img
-                  class="overlay-image editor-image"
-                  :src="thumbs[activeMedia.id]"
-                  :alt="activeMedia.filename"
-                  :style="mediaFilterStyleFromEditor()"
-                />
-                <div class="crop-rect" :style="editorCropRectStyle" @pointerdown="startCropDrag($event, 'move')">
-                  <span class="crop-grid v1"></span>
-                  <span class="crop-grid v2"></span>
-                  <span class="crop-grid h1"></span>
-                  <span class="crop-grid h2"></span>
-                  <span class="crop-handle nw" @pointerdown.stop="startCropDrag($event, 'nw')"></span>
-                  <span class="crop-handle ne" @pointerdown.stop="startCropDrag($event, 'ne')"></span>
-                  <span class="crop-handle sw" @pointerdown.stop="startCropDrag($event, 'sw')"></span>
-                  <span class="crop-handle se" @pointerdown.stop="startCropDrag($event, 'se')"></span>
-                  <span class="crop-handle n" @pointerdown.stop="startCropDrag($event, 'n')"></span>
-                  <span class="crop-handle s" @pointerdown.stop="startCropDrag($event, 's')"></span>
-                  <span class="crop-handle w" @pointerdown.stop="startCropDrag($event, 'w')"></span>
-                  <span class="crop-handle e" @pointerdown.stop="startCropDrag($event, 'e')"></span>
+          <aside class="editor-sidebar">
+            <div class="editor-controls">
+              <div class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
+              <div class="slider-row"><span>Brightness</span><input v-model="editor.brightness" type="range" min="-60" max="60" /></div>
+              <div class="slider-row"><span>Contrast</span><input v-model="editor.contrast" type="range" min="-60" max="60" /></div>
+              <div class="slider-row"><span>Saturation</span><input v-model="editor.saturation" type="range" min="-60" max="60" /></div>
+              <div class="slider-row"><span>Tone depth</span><input v-model="editor.toneDepth" type="range" min="-100" max="100" /></div>
+              <div class="slider-row"><span>Shadows level</span><input v-model="editor.shadowsLevel" type="range" min="-100" max="100" /></div>
+              <div class="slider-row"><span>Highlights level</span><input v-model="editor.highlightsLevel" type="range" min="-100" max="100" /></div>
+              <div class="slider-row"><span>Sharpness</span><input v-model="editor.sharpness" type="range" min="0" max="100" /></div>
+              <div class="slider-row"><span>Definition</span><input v-model="editor.definition" type="range" min="-100" max="100" /></div>
+              <div class="slider-row"><span>Vignette</span><input v-model="editor.vignette" type="range" min="0" max="100" /></div>
+              <div class="slider-row"><span>Glamour</span><input v-model="editor.glamour" type="range" min="0" max="100" /></div>
+              <div class="slider-row"><span>Grayscale</span><input v-model="editor.grayscale" type="range" min="0" max="100" /></div>
+              <div class="slider-row"><span>Sepia</span><input v-model="editor.sepia" type="range" min="0" max="100" /></div>
+              <div class="slider-row"><span>Crop zoom</span><input v-model="editor.cropZoom" type="range" min="0" max="60" /></div>
+              <div class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" /></div>
+              <div class="slider-row switches">
+                <span>Mirror</span>
+                <div class="switch-group">
+                  <label><input v-model="editor.flipX" type="checkbox" /> Horizontal</label>
+                  <label><input v-model="editor.flipY" type="checkbox" /> Vertical</label>
                 </div>
               </div>
             </div>
-            <div v-else class="overlay-fallback">Preview unavailable for this format</div>
+
+            <div class="editor-actions">
+              <button class="btn ghost" @click="resetEditorAdjustments">Reset</button>
+              <button class="btn ghost" @click="closeEditMode">Cancel</button>
+              <button class="btn ghost" :disabled="saving || undoCount === 0" @click="undoLastPermanentEdit">
+                Undo apply ({{ undoCount }})
+              </button>
+              <button class="btn" :disabled="saving" @click="applyImageEditsPermanently">Apply permanently</button>
+            </div>
+          </aside>
+        </div>
+
+        <div class="editor-mobile-panel">
+          <div class="editor-mobile-tabs">
+            <button
+              v-for="tab in editorMobileTabs"
+              :key="`editor-tab-${tab.key}`"
+              class="chip"
+              :class="{ active: activeEditorMobileTab === tab.key }"
+              @click="activeEditorMobileTab = tab.key"
+            >
+              {{ tab.label }}
+            </button>
           </div>
 
-          <div class="editor-controls">
-            <div class="slider-row">
-              <span>Temperature</span>
-              <input v-model="editor.temperature" type="range" min="-100" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Brightness</span>
-              <input v-model="editor.brightness" type="range" min="-60" max="60" />
-            </div>
-            <div class="slider-row">
-              <span>Contrast</span>
-              <input v-model="editor.contrast" type="range" min="-60" max="60" />
-            </div>
-            <div class="slider-row">
-              <span>Saturation</span>
-              <input v-model="editor.saturation" type="range" min="-60" max="60" />
-            </div>
-            <div class="slider-row">
-              <span>Tone depth</span>
-              <input v-model="editor.toneDepth" type="range" min="-100" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Shadows level</span>
-              <input v-model="editor.shadowsLevel" type="range" min="-100" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Highlights level</span>
-              <input v-model="editor.highlightsLevel" type="range" min="-100" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Sharpness</span>
-              <input v-model="editor.sharpness" type="range" min="0" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Definition</span>
-              <input v-model="editor.definition" type="range" min="-100" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Vignette</span>
-              <input v-model="editor.vignette" type="range" min="0" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Glamour</span>
-              <input v-model="editor.glamour" type="range" min="0" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Grayscale</span>
-              <input v-model="editor.grayscale" type="range" min="0" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Sepia</span>
-              <input v-model="editor.sepia" type="range" min="0" max="100" />
-            </div>
-            <div class="slider-row">
-              <span>Crop zoom</span>
-              <input v-model="editor.cropZoom" type="range" min="0" max="60" />
-            </div>
-            <div class="slider-row">
-              <span>Rotate</span>
-              <input v-model="editor.rotate" type="range" min="-180" max="180" />
-            </div>
-            <div class="slider-row switches">
+          <div class="editor-mobile-control">
+            <div v-if="activeEditorMobileTab === 'temperature'" class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'brightness'" class="slider-row"><span>Brightness</span><input v-model="editor.brightness" type="range" min="-60" max="60" /></div>
+            <div v-else-if="activeEditorMobileTab === 'contrast'" class="slider-row"><span>Contrast</span><input v-model="editor.contrast" type="range" min="-60" max="60" /></div>
+            <div v-else-if="activeEditorMobileTab === 'saturation'" class="slider-row"><span>Saturation</span><input v-model="editor.saturation" type="range" min="-60" max="60" /></div>
+            <div v-else-if="activeEditorMobileTab === 'toneDepth'" class="slider-row"><span>Tone depth</span><input v-model="editor.toneDepth" type="range" min="-100" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'shadowsLevel'" class="slider-row"><span>Shadows level</span><input v-model="editor.shadowsLevel" type="range" min="-100" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'highlightsLevel'" class="slider-row"><span>Highlights level</span><input v-model="editor.highlightsLevel" type="range" min="-100" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'sharpness'" class="slider-row"><span>Sharpness</span><input v-model="editor.sharpness" type="range" min="0" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'definition'" class="slider-row"><span>Definition</span><input v-model="editor.definition" type="range" min="-100" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'vignette'" class="slider-row"><span>Vignette</span><input v-model="editor.vignette" type="range" min="0" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'glamour'" class="slider-row"><span>Glamour</span><input v-model="editor.glamour" type="range" min="0" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'grayscale'" class="slider-row"><span>Grayscale</span><input v-model="editor.grayscale" type="range" min="0" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'sepia'" class="slider-row"><span>Sepia</span><input v-model="editor.sepia" type="range" min="0" max="100" /></div>
+            <div v-else-if="activeEditorMobileTab === 'cropZoom'" class="slider-row"><span>Crop zoom</span><input v-model="editor.cropZoom" type="range" min="0" max="60" /></div>
+            <div v-else-if="activeEditorMobileTab === 'rotate'" class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" /></div>
+            <div v-else class="slider-row switches">
               <span>Mirror</span>
               <div class="switch-group">
                 <label><input v-model="editor.flipX" type="checkbox" /> Horizontal</label>
@@ -3064,13 +3131,19 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="editor-actions">
-            <button class="btn ghost" @click="resetEditorAdjustments">Reset</button>
-            <button class="btn ghost" @click="closeEditMode">Cancel</button>
-            <button class="btn ghost" :disabled="saving || undoCount === 0" @click="undoLastPermanentEdit">
-              Undo apply ({{ undoCount }})
+          <div class="editor-actions editor-actions-mobile">
+            <button class="btn ghost" aria-label="Reset adjustments" title="Reset" @click="resetEditorAdjustments">
+              <i class="ri-refresh-line" aria-hidden="true"></i>
             </button>
-            <button class="btn" :disabled="saving" @click="applyImageEditsPermanently">Apply permanently</button>
+            <button class="btn ghost" aria-label="Cancel editing" title="Cancel" @click="closeEditMode">
+              <i class="ri-close-line" aria-hidden="true"></i>
+            </button>
+            <button class="btn ghost" aria-label="Undo last apply" title="Undo" :disabled="saving || undoCount === 0" @click="undoLastPermanentEdit">
+              <i class="ri-arrow-go-back-line" aria-hidden="true"></i>
+            </button>
+            <button class="btn" aria-label="Apply permanently" title="Apply" :disabled="saving" @click="applyImageEditsPermanently">
+              <i class="ri-check-line" aria-hidden="true"></i>
+            </button>
           </div>
         </div>
       </div>

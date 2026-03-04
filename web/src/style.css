@@ -807,6 +807,13 @@ body {
   color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 1.2px;
+
+.details-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 }
 
 .details-preview {
@@ -1120,27 +1127,52 @@ label {
   right: 14px;
 }
 
-.editor-modal {
-  width: min(980px, 94vw);
-  max-height: calc(100vh - 42px);
-  overflow-y: auto;
-  border-radius: 14px;
-  background: var(--bg-2);
-  border: 1px solid var(--border-strong);
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
 .editor-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
 
+.editor-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  gap: 12px;
+}
+
+.editor-head-full {
+  padding: 4px 2px;
+}
+
+.editor-layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 12px;
+}
+
+.editor-canvas {
+  min-height: 0;
+}
+
+.editor-sidebar {
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 10px;
+}
+
 .editor-preview {
-  border-radius: 0;
+  border-radius: 12px;
   overflow: auto;
   background: var(--bg-3);
   border: 1px solid var(--border);
@@ -1148,7 +1180,8 @@ label {
   justify-content: center;
   align-items: center;
   padding: 12px;
-  max-height: min(68vh, 760px);
+  height: 100%;
+  min-height: 0;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -1279,8 +1312,11 @@ label {
 
 .editor-controls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  grid-template-columns: 1fr;
   gap: 10px;
+  overflow: auto;
+  min-height: 0;
+  padding-right: 4px;
 }
 
 .slider-row {
@@ -1313,10 +1349,58 @@ label {
 
 .editor-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: stretch;
+  flex-wrap: wrap;
   gap: 10px;
   position: static;
   padding: 10px 0 2px;
+}
+
+.editor-actions .btn {
+  flex: 1 1 calc(50% - 10px);
+}
+
+.editor-mobile-panel {
+  display: none;
+}
+
+.editor-mobile-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+
+.editor-mobile-tabs .chip.active {
+  background: var(--brand);
+  color: #fff;
+  border-color: var(--brand);
+}
+
+.editor-mobile-control {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-2);
+  padding: 10px;
+}
+
+.editor-actions-mobile {
+  padding-top: 8px;
+  flex-wrap: nowrap;
+}
+
+.editor-actions-mobile .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.editor-actions-mobile .btn i {
+  font-size: 18px;
+  line-height: 1;
 }
 
 @media (max-width: 1280px) {
@@ -1354,7 +1438,17 @@ label {
 
   .details {
     order: 3;
+    display: none;
+  }
+
+  .details.mobile-details-open {
     display: flex;
+    position: fixed;
+    inset: 12px;
+    top: 70px;
+    z-index: 60;
+    max-height: none;
+    border-radius: 12px;
   }
 
   .masonry {
@@ -1434,10 +1528,6 @@ label {
     min-width: 0;
   }
 
-  .editor-controls {
-    grid-template-columns: 1fr;
-  }
-
   .editor-preview {
     max-height: 58vh;
     align-items: flex-start;
@@ -1497,13 +1587,45 @@ label {
     right: -10px;
   }
 
-  .editor-actions {
-    flex-wrap: wrap;
-    justify-content: stretch;
+  .editor-fullscreen {
+    padding: 8px;
+    gap: 8px;
   }
 
-  .editor-actions .btn {
-    flex: 1 1 calc(50% - 10px);
+  .editor-head-full {
+    padding: 2px 0;
+  }
+
+  .editor-layout {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .editor-sidebar {
+    display: none;
+  }
+
+  .editor-canvas {
+    min-height: 0;
+  }
+
+  .editor-preview {
+    border-radius: 10px;
+  }
+
+  .editor-mobile-panel {
+    display: grid;
+    gap: 8px;
+    padding-bottom: calc(2px + env(safe-area-inset-bottom));
+  }
+
+  .editor-mobile-control .slider-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .editor-actions {
+    gap: 8px;
   }
 
   .lightbox-actions {
