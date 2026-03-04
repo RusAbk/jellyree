@@ -136,9 +136,14 @@ const shareDialog = reactive({
   saving: false,
 })
 
-let heicConverterModulePromise: Promise<typeof import('heic2any')> | null = null
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 let popStateHandler: (() => void) | null = null
+const thumbLoadsInFlight = new Map<string, Promise<void>>()
+const thumbQueue = {
+  active: 0,
+  limit: 6,
+  waiters: [] as Array<() => void>,
+}
 
 const editor = reactive({
   filename: '',
@@ -344,17 +349,6 @@ const visibleSubalbums = computed(() => {
     .filter((album) => (album.parentId || null) === parentId)
     .filter((album) => !q || album.name.toLowerCase().includes(q))
     .sort((a, b) => a.name.localeCompare(b.name))
-})
-const albumPreviewMediaById = computed(() => {
-  const map = new Map<string, { id: string; filename: string; mimeType: string }>()
-  for (const album of albums.value) {
-    for (const preview of album.previewMedia || []) {
-      if (!map.has(preview.id)) {
-        map.set(preview.id, preview)
-      }
-    }
-  }
-  return map
 })
 const visibleSubalbumPreviewMedia = computed(() =>
   visibleSubalbums.value.flatMap((album) => album.previewMedia || []).slice(0, 32),
@@ -1275,35 +1269,46 @@ function clearThumb(mediaId: string) {
 
 async function loadThumb(mediaId: string) {
   if (thumbs.value[mediaId] || !token.value) return
-  try {
-    const blob = await api.fetchFileBlob(token.value, mediaId)
-    const item = media.value.find((entry) => entry.id === mediaId)
-    const preview = albumPreviewMediaById.value.get(mediaId)
-    const mime = item?.mimeType.toLowerCase() || preview?.mimeType.toLowerCase() || ''
-    const isHeic = item
-      ? isHeicFile(item)
-      : Boolean(preview && isHeicLike(preview.mimeType, preview.filename))
 
-    if (isHeic || mime.includes('heic') || mime.includes('heif')) {
-      if (!heicConverterModulePromise) {
-        heicConverterModulePromise = import('heic2any')
-      }
-      const heicConverterModule = await heicConverterModulePromise
-      const heicConverter = heicConverterModule.default
+  const existing = thumbLoadsInFlight.get(mediaId)
+  if (existing) {
+    await existing
+    return
+  }
 
-      const converted = await heicConverter({
-        blob,
-        toType: 'image/jpeg',
-        quality: 0.9,
+  const task = (async () => {
+    if (thumbQueue.active >= thumbQueue.limit) {
+      await new Promise<void>((resolve) => {
+        thumbQueue.waiters.push(resolve)
       })
-      const convertedBlob = Array.isArray(converted) ? converted[0] : converted
-      thumbs.value[mediaId] = URL.createObjectURL(convertedBlob as Blob)
-      return
     }
 
-    thumbs.value[mediaId] = URL.createObjectURL(blob)
-  } catch {
-    thumbs.value[mediaId] = ''
+    thumbQueue.active += 1
+
+    try {
+      const width = Math.max(320, Math.min(1280, Math.round((isMobileViewport.value ? 480 : 720) * (window.devicePixelRatio || 1))))
+      const blob = await api.fetchThumbBlob(token.value as string, mediaId, width)
+      thumbs.value[mediaId] = URL.createObjectURL(blob)
+    } catch {
+      try {
+        const blob = await api.fetchFileBlob(token.value as string, mediaId)
+        thumbs.value[mediaId] = URL.createObjectURL(blob)
+      } catch {
+        thumbs.value[mediaId] = ''
+      }
+    } finally {
+      thumbQueue.active = Math.max(0, thumbQueue.active - 1)
+      const next = thumbQueue.waiters.shift()
+      if (next) next()
+    }
+  })()
+
+  thumbLoadsInFlight.set(mediaId, task)
+
+  try {
+    await task
+  } finally {
+    thumbLoadsInFlight.delete(mediaId)
   }
 }
 

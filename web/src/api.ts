@@ -346,6 +346,19 @@ export const api = {
 
     return response.blob()
   },
+  fetchThumbBlob: async (token: string, mediaId: string, width = 640) => {
+    const response = await fetch(`${API_BASE}/media/${mediaId}/thumb?w=${encodeURIComponent(String(width))}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error('Cannot load thumbnail')
+    }
+
+    return response.blob()
+  },
   downloadMediaBlob: async (token: string, mediaId: string) => {
     const response = await fetch(`${API_BASE}/media/${mediaId}/download`, {
       headers: {

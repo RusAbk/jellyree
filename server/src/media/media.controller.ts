@@ -47,6 +47,10 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function clampInteger(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
 function normalizeExifDate(value: unknown): Date | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return value;
@@ -736,6 +740,83 @@ export class MediaController {
       return response.send(body);
     } catch {
       return response.status(404).json({ error: 'File not found in storage' });
+    }
+  }
+
+  @Get(':id/thumb')
+  async thumb(
+    @Req() req: RequestWithUser,
+    @Param('id') id: string,
+    @Query('w') widthQuery: string | undefined,
+    @Res() response: Response,
+  ) {
+    const media = await this.prisma.media.findFirst({
+      where: { id, ownerId: req.user!.id },
+      select: {
+        id: true,
+        ownerId: true,
+        filePath: true,
+        mimeType: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!media) {
+      return response.status(404).json({ error: 'Not found' });
+    }
+
+    const requestedWidth = Number(widthQuery || 640);
+    const thumbWidth = clampInteger(Number.isFinite(requestedWidth) ? requestedWidth : 640, 160, 1600);
+    const version = media.updatedAt ? media.updatedAt.getTime() : Date.now();
+    const thumbPath = `thumbs/${media.id}_${version}_${thumbWidth}.webp`;
+
+    try {
+      const cached = await this.getObjectFromR2(media.ownerId, thumbPath);
+      if (cached.Body) {
+        const body = await this.readBodyToBuffer(cached.Body);
+        response.setHeader('Content-Type', cached.ContentType || 'image/webp');
+        response.setHeader('Content-Length', String(body.byteLength));
+        response.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+        return response.send(body);
+      }
+    } catch {
+      // cache miss -> generate below
+    }
+
+    try {
+      const sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+      const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
+        .rotate()
+        .resize({
+          width: thumbWidth,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .webp({ quality: 80, effort: 4 })
+        .toBuffer();
+
+      await this.uploadBufferToR2(media.ownerId, thumbPath, 'image/webp', thumbBuffer).catch(() => {
+        return;
+      });
+
+      response.setHeader('Content-Type', 'image/webp');
+      response.setHeader('Content-Length', String(thumbBuffer.byteLength));
+      response.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+      return response.send(thumbBuffer);
+    } catch {
+      try {
+        const original = await this.getObjectFromR2(media.ownerId, media.filePath);
+        if (!original.Body) {
+          return response.status(404).json({ error: 'File not found in storage' });
+        }
+        const body = await this.readBodyToBuffer(original.Body);
+        response.setHeader('Content-Type', original.ContentType || media.mimeType || 'application/octet-stream');
+        response.setHeader('Content-Length', String(body.byteLength));
+        response.setHeader('Cache-Control', 'private, no-cache');
+        return response.send(body);
+      } catch {
+        return response.status(404).json({ error: 'File not found in storage' });
+      }
     }
   }
 
