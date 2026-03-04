@@ -866,6 +866,37 @@ label {
   cursor: text;
 }
 
+.tag-input-wrap {
+  position: relative;
+}
+
+.tag-suggestions {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-3);
+  max-height: 170px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  gap: 4px;
+}
+
+.tag-suggestion-item {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  border-radius: 8px;
+  padding: 7px 8px;
+  cursor: pointer;
+}
+
+.tag-suggestion-item:hover {
+  background: var(--bg-4);
+}
+
 .inline-edit-value:hover {
   border-color: var(--border-strong);
 }

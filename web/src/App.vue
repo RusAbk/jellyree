@@ -22,8 +22,9 @@ const albums = ref<Album[]>([])
 const tags = ref<Tag[]>([])
 const thumbs = ref<Record<string, string>>({})
 const activeMediaId = ref<string | null>(null)
-const activeSection = ref<'all' | 'favorites'>('all')
+const activeSection = ref<'all' | 'favorites' | 'tags'>('all')
 const activeAlbumId = ref('')
+const activeTagId = ref('')
 const search = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -63,9 +64,11 @@ const targetAlbumId = ref('')
 const bulkTargetAlbumId = ref('')
 const editorCropStage = ref<HTMLDivElement | null>(null)
 const masonryRef = ref<HTMLElement | null>(null)
+const tagsInputRef = ref<HTMLInputElement | null>(null)
 const selectedMediaIds = ref<string[]>([])
 const suppressClickUntil = ref(0)
 const isTouchUi = ref(false)
+const suppressTagsCommitOnBlur = ref(false)
 
 const touchGesture = reactive({
   timer: null as ReturnType<typeof setTimeout> | null,
@@ -254,12 +257,48 @@ const pinnedAlbums = computed(() => {
     .filter((album): album is Album => Boolean(album))
 })
 
+const sortedTags = computed(() =>
+  [...tags.value].sort((a, b) => a.name.localeCompare(b.name)),
+)
+
+const activeTag = computed(() => tags.value.find((tag) => tag.id === activeTagId.value) || null)
+const parsedTagsInput = computed(() => {
+  const raw = editor.tagsInput
+  const parts = raw.split(',')
+  const draftRaw = parts.pop() ?? ''
+  const selected = new Set(
+    parts
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean),
+  )
+  return {
+    selected,
+    draftRaw,
+    draft: draftRaw.trim().toLowerCase(),
+  }
+})
+
+const tagSuggestions = computed(() => {
+  if (activeDetailsField.value !== 'tags') return []
+  const { draft, selected } = parsedTagsInput.value
+  if (!draft) return []
+
+  return sortedTags.value.filter((tag) => {
+    const name = tag.name.toLowerCase()
+    return name.startsWith(draft) && !selected.has(name)
+  })
+})
+
 const filteredMedia = computed(() => {
   const q = search.value.trim().toLowerCase()
   let base = media.value
 
   if (activeSection.value === 'favorites') {
     base = base.filter((item) => item.isFavorite)
+  }
+
+  if (activeSection.value === 'tags' && activeTagId.value) {
+    base = base.filter((item) => item.mediaTags.some((entry) => entry.tag.id === activeTagId.value))
   }
 
   const filtered = !q
@@ -1260,6 +1299,7 @@ async function loadAll() {
 
 function openAlbum(albumId: string, pushRoute = true) {
   activeSection.value = 'all'
+  activeTagId.value = ''
   activeAlbumId.value = albumId
   activeMediaId.value = null
   if (pushRoute && routeMode.value === 'app') {
@@ -1279,9 +1319,47 @@ function openAlbum(albumId: string, pushRoute = true) {
 
 function goRoot(pushRoute = true) {
   activeAlbumId.value = ''
+  activeTagId.value = ''
   activeMediaId.value = null
   if (pushRoute && routeMode.value === 'app') {
     pushPath('/')
+  }
+}
+
+function openTag(tagId: string) {
+  activeSection.value = 'tags'
+  activeAlbumId.value = ''
+  activeTagId.value = tagId
+  activeMediaId.value = null
+  closeContextMenus()
+}
+
+function applyTagSuggestion(tagName: string) {
+  const parts = editor.tagsInput.split(',')
+  const draftRaw = parts.pop() ?? ''
+  const prefixSpaces = draftRaw.match(/^\s*/)?.[0] ?? ''
+  const base = parts.map((part) => part.trim()).filter(Boolean)
+  const next = [...base, `${prefixSpaces}${tagName}`]
+  editor.tagsInput = `${next.join(', ')}, `
+
+  suppressTagsCommitOnBlur.value = true
+  setTimeout(() => {
+    tagsInputRef.value?.focus()
+    suppressTagsCommitOnBlur.value = false
+  }, 0)
+}
+
+async function renameTagFromSidebar(tag: Tag) {
+  if (!token.value) return
+  const nextName = window.prompt('Rename tag', tag.name)?.trim()
+  if (!nextName || nextName.toLowerCase() === tag.name.toLowerCase()) return
+
+  try {
+    await api.updateTag(authHeaders(), tag.id, { name: nextName })
+    await loadAll()
+    showToast('Tag renamed')
+  } catch (error) {
+    message.value = (error as Error).message
   }
 }
 
@@ -1676,6 +1754,7 @@ function cancelDetailsFieldEdit(field: 'filename' | 'tags' | 'album' | 'metadata
 async function commitDetailsFieldEdit(field: 'filename' | 'tags' | 'album' | 'metadataCreatedAt' | 'metadataModifiedAt' | 'location') {
   if (!activeMedia.value || !token.value) return
   if (activeDetailsField.value !== field) return
+  if (field === 'tags' && suppressTagsCommitOnBlur.value) return
   if (saving.value) return
 
   const mediaId = activeMedia.value.id
@@ -2338,6 +2417,10 @@ watch([activeAlbumId, activeSection, search], () => {
   if (!token.value) return
   if (activeSection.value === 'favorites') {
     activeAlbumId.value = ''
+    activeTagId.value = ''
+  }
+  if (activeSection.value === 'tags') {
+    activeAlbumId.value = ''
   }
   void loadAll()
 })
@@ -2643,13 +2726,26 @@ onBeforeUnmount(() => {
               <button class="menu-dots-btn" @click.stop="openAlbumContextMenu($event, node.album.id)">⋯</button>
             </div>
           </div>
+
+          <div class="side-group" v-if="sortedTags.length > 0">
+            <div class="side-title">Tags</div>
+            <div
+              v-for="tag in sortedTags"
+              :key="`tag-${tag.id}`"
+              class="nav-item row album-row"
+              :class="{ active: activeSection === 'tags' && activeTagId === tag.id }"
+            >
+              <span class="row-main" @click="openTag(tag.id)"># {{ tag.name }}</span>
+              <button class="menu-dots-btn" title="Rename tag" @click.stop="renameTagFromSidebar(tag)">✎</button>
+            </div>
+          </div>
         </aside>
 
         <main class="gallery-main" @pointerdown="startMarqueeSelect">
           <div class="gallery-head">
             <div>
               <div class="gallery-title">
-                {{ activeSection === 'favorites' ? 'Favorites' : (activeAlbum ? activeAlbum.name : 'All photos') }}
+                {{ activeSection === 'favorites' ? 'Favorites' : (activeSection === 'tags' ? (activeTag ? `#${activeTag.name}` : 'Tag') : (activeAlbum ? activeAlbum.name : 'All photos')) }}
               </div>
               <div class="muted">{{ filteredMedia.length }} items · {{ selectedCount }} selected</div>
             </div>
@@ -2854,16 +2950,28 @@ onBeforeUnmount(() => {
             >
               {{ editor.tagsInput || '—' }}
             </div>
-            <input
-              v-else
-              v-model="editor.tagsInput"
-              class="input"
-              placeholder="tag1, tag2"
-              autofocus
-              @blur="commitDetailsFieldEdit('tags')"
-              @keydown.enter.prevent="commitDetailsFieldEdit('tags')"
-              @keydown.esc.prevent="cancelDetailsFieldEdit('tags')"
-            />
+            <div v-else class="tag-input-wrap">
+              <input
+                ref="tagsInputRef"
+                v-model="editor.tagsInput"
+                class="input"
+                placeholder="tag1, tag2"
+                autofocus
+                @blur="commitDetailsFieldEdit('tags')"
+                @keydown.enter.prevent="commitDetailsFieldEdit('tags')"
+                @keydown.esc.prevent="cancelDetailsFieldEdit('tags')"
+              />
+              <div v-if="tagSuggestions.length > 0" class="tag-suggestions" @pointerdown.prevent>
+                <button
+                  v-for="tag in tagSuggestions"
+                  :key="`tag-suggestion-${tag.id}`"
+                  class="tag-suggestion-item"
+                  @click="applyTagSuggestion(tag.name)"
+                >
+                  # {{ tag.name }}
+                </button>
+              </div>
+            </div>
           </div>
 
           <div class="field">

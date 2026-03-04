@@ -297,6 +297,15 @@ export const api = {
       token,
     ),
   listTags: (token: string) => request<Tag[]>('/tags', {}, token),
+  updateTag: (token: string, tagId: string, payload: { name: string }) =>
+    request<Tag>(
+      `/tags/${tagId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
   getMediaShareSettings: (token: string, mediaId: string) =>
     request<{ ok: boolean; settings: ShareSettings }>(`/media/${mediaId}/share-settings`, {}, token),
   updateMediaShareSettings: (
