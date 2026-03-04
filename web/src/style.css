@@ -1384,8 +1384,8 @@ label {
   background: var(--bg-3);
   border: 1px solid var(--border);
   display: flex;
-  justify-content: center;
-  align-items: center;
+  justify-content: flex-start;
+  align-items: flex-start;
   padding: 12px;
   height: 100%;
   min-height: 0;
@@ -1398,8 +1398,8 @@ label {
   width: 100%;
   min-height: 320px;
   display: flex;
-  justify-content: center;
-  align-items: center;
+  justify-content: flex-start;
+  align-items: flex-start;
   user-select: none;
   overflow: visible;
 }

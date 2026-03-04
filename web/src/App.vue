@@ -403,7 +403,7 @@ const editorCropRectStyle = computed(() => ({
 const editorPreviewScale = ref(100)
 const editorPreviewFrameStyle = computed(() => ({
   transform: `scale(${editorPreviewScale.value / 100})`,
-  transformOrigin: 'center center',
+  transformOrigin: 'top left',
 }))
 
 function authHeaders() {
