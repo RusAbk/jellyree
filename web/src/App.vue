@@ -2867,7 +2867,10 @@ onBeforeUnmount(() => {
 
         <aside class="details" :class="{ 'mobile-details-open': mobileDetailsOpen }" v-if="activeMedia">
           <div class="details-head">
-            <div class="details-title">Photo details</div>
+            <div class="details-head-main">
+              <div class="details-title">Photo details</div>
+              <div v-if="mobileDetailsOpen" class="muted details-subtitle">{{ activeMedia.filename }}</div>
+            </div>
             <button v-if="mobileDetailsOpen" class="chip" @click="mobileDetailsOpen = false">Close</button>
           </div>
           <div class="details-preview">
