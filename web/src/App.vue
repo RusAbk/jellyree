@@ -801,7 +801,6 @@ function finishMediaTouch(mediaId: string) {
   cancelTouchGesture()
   if (skipTapAction) return
 
-  suppressClickUntil.value = Date.now()
   openLightbox(mediaId)
 }
 
@@ -2498,7 +2497,7 @@ onBeforeUnmount(() => {
               :class="{ active: activeAlbumId === album.id && activeSection === 'all', 'long-press-pending': isLongPressPending('album', album.id) }"
               @click="onAlbumCardClick(album.id)"
               @contextmenu.prevent="openAlbumContextMenu($event, album.id)"
-              @touchstart.passive="startTouchGesture('album', album.id, $event)"
+              @touchstart="startTouchGesture('album', album.id, $event)"
               @touchmove.passive="moveTouchGesture($event)"
               @touchend="finishAlbumTouch(album.id)"
               @touchcancel="cancelTouchGesture"
@@ -2528,7 +2527,7 @@ onBeforeUnmount(() => {
               @dragend="onAlbumDragEnd"
               @contextmenu.prevent="openAlbumContextMenu($event, node.album.id)"
               @click="onAlbumCardClick(node.album.id)"
-              @touchstart.passive="startTouchGesture('album', node.album.id, $event)"
+              @touchstart="startTouchGesture('album', node.album.id, $event)"
               @touchmove.passive="moveTouchGesture($event)"
               @touchend="finishAlbumTouch(node.album.id)"
               @touchcancel="cancelTouchGesture"
@@ -2597,7 +2596,7 @@ onBeforeUnmount(() => {
               class="photo-card album-card"
               :class="{ 'long-press-pending': isLongPressPending('album', album.id) }"
               @click="onAlbumCardClick(album.id)"
-              @touchstart.passive="startTouchGesture('album', album.id, $event)"
+              @touchstart="startTouchGesture('album', album.id, $event)"
               @touchmove.passive="moveTouchGesture($event)"
               @touchend="finishAlbumTouch(album.id)"
               @touchcancel="cancelTouchGesture"
@@ -2638,7 +2637,7 @@ onBeforeUnmount(() => {
               @click="onMediaCardClick(item.id, $event)"
               @contextmenu.prevent="openMediaContextMenu($event, item.id)"
               @dblclick="onMediaCardDoubleClick(item.id)"
-              @touchstart.passive="startTouchGesture('media', item.id, $event)"
+              @touchstart="startTouchGesture('media', item.id, $event)"
               @touchmove.passive="moveTouchGesture($event)"
               @touchend="finishMediaTouch(item.id)"
               @touchcancel="cancelTouchGesture"

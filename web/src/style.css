@@ -626,6 +626,15 @@ body {
   width: 100%;
   display: block;
   border-radius: 0;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.photo-card,
+.album-card,
+.album-preview-cell {
+  -webkit-touch-callout: none;
 }
 
 .card-menu-btn {
