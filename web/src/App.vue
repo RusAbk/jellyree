@@ -89,9 +89,12 @@ const touchGesture = reactive({
 
 const lightboxSwipe = reactive({
   active: false,
-  pointerId: -1,
   startX: 0,
   startY: 0,
+  lastX: 0,
+  lastY: 0,
+  startedAt: 0,
+  horizontalIntent: false,
 })
 
 const albumContextMenu = reactive({
@@ -1492,29 +1495,68 @@ function scrollActiveLightboxThumbIntoView() {
   target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
 }
 
-function onLightboxPointerDown(event: PointerEvent) {
-  if (event.pointerType !== 'touch') return
-  const target = event.target as HTMLElement | null
-  if (target?.closest('.lightbox-actions, .lightbox-strip, .overlay-close, .overlay-arrow')) return
-  lightboxSwipe.active = true
-  lightboxSwipe.pointerId = event.pointerId
-  lightboxSwipe.startX = event.clientX
-  lightboxSwipe.startY = event.clientY
+function resetLightboxSwipe() {
+  lightboxSwipe.active = false
+  lightboxSwipe.horizontalIntent = false
 }
 
-function onLightboxPointerUp(event: PointerEvent) {
-  if (!lightboxSwipe.active || event.pointerId !== lightboxSwipe.pointerId) return
+function onLightboxTouchStart(event: TouchEvent) {
+  if (event.touches.length !== 1) {
+    resetLightboxSwipe()
+    return
+  }
 
-  const dx = event.clientX - lightboxSwipe.startX
-  const dy = event.clientY - lightboxSwipe.startY
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.lightbox-actions, .lightbox-strip, .overlay-close, .overlay-arrow')) {
+    resetLightboxSwipe()
+    return
+  }
+
+  const touch = event.touches[0]
+  if (!touch) return
+  lightboxSwipe.active = true
+  lightboxSwipe.startX = touch.clientX
+  lightboxSwipe.startY = touch.clientY
+  lightboxSwipe.lastX = touch.clientX
+  lightboxSwipe.lastY = touch.clientY
+  lightboxSwipe.startedAt = Date.now()
+  lightboxSwipe.horizontalIntent = false
+}
+
+function onLightboxTouchMove(event: TouchEvent) {
+  if (!lightboxSwipe.active || event.touches.length !== 1) return
+  const touch = event.touches[0]
+  if (!touch) return
+
+  lightboxSwipe.lastX = touch.clientX
+  lightboxSwipe.lastY = touch.clientY
+
+  const dx = touch.clientX - lightboxSwipe.startX
+  const dy = touch.clientY - lightboxSwipe.startY
   const absX = Math.abs(dx)
   const absY = Math.abs(dy)
-  const horizontalSwipe = absX > 50 && absX > absY * 1.25
 
-  lightboxSwipe.active = false
-  lightboxSwipe.pointerId = -1
+  if (absX > 12 && absX > absY * 1.1) {
+    lightboxSwipe.horizontalIntent = true
+    event.preventDefault()
+  }
+}
 
-  if (!horizontalSwipe || lightboxItems.value.length <= 1) return
+function onLightboxTouchEnd() {
+  if (!lightboxSwipe.active) return
+
+  const dx = lightboxSwipe.lastX - lightboxSwipe.startX
+  const dy = lightboxSwipe.lastY - lightboxSwipe.startY
+  const absX = Math.abs(dx)
+  const absY = Math.abs(dy)
+  const elapsed = Date.now() - lightboxSwipe.startedAt
+  const fastFlick = absX >= 24 && elapsed <= 220 && absX > absY
+  const longSwipe = absX >= 44 && absX > absY * 1.15
+
+  const shouldSwipe = (lightboxSwipe.horizontalIntent && (fastFlick || longSwipe))
+  resetLightboxSwipe()
+
+  if (!shouldSwipe || lightboxItems.value.length <= 1) return
   if (dx < 0) {
     nextLightbox()
   } else {
@@ -1522,10 +1564,9 @@ function onLightboxPointerUp(event: PointerEvent) {
   }
 }
 
-function onLightboxPointerCancel(event: PointerEvent) {
-  if (event.pointerId !== lightboxSwipe.pointerId) return
-  lightboxSwipe.active = false
-  lightboxSwipe.pointerId = -1
+function onLightboxTouchCancel() {
+  if (!lightboxSwipe.active) return
+  resetLightboxSwipe()
 }
 
 function openEditMode(mediaId?: string) {
@@ -3401,9 +3442,10 @@ onBeforeUnmount(() => {
 
         <div
           class="overlay-content"
-          @pointerdown="onLightboxPointerDown"
-          @pointerup="onLightboxPointerUp"
-          @pointercancel="onLightboxPointerCancel"
+          @touchstart="onLightboxTouchStart"
+          @touchmove="onLightboxTouchMove"
+          @touchend="onLightboxTouchEnd"
+          @touchcancel="onLightboxTouchCancel"
         >
           <div class="lightbox-actions">
             <button class="btn ghost" @click.stop="openEditMode(activeMedia.id)">Edit</button>

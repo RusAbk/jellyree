@@ -1205,6 +1205,8 @@ label {
   display: grid;
   place-items: center;
   padding: 24px;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 .overlay-content {
@@ -1214,6 +1216,8 @@ label {
   flex-direction: column;
   gap: 12px;
   padding-bottom: 88px;
+  touch-action: pan-y;
+  overscroll-behavior-x: contain;
 }
 
 .overlay-image {
