@@ -64,6 +64,17 @@ const editorCropStage = ref<HTMLDivElement | null>(null)
 const masonryRef = ref<HTMLElement | null>(null)
 const selectedMediaIds = ref<string[]>([])
 const suppressClickUntil = ref(0)
+const isTouchUi = ref(false)
+
+const touchGesture = reactive({
+  timer: null as ReturnType<typeof setTimeout> | null,
+  target: null as 'media' | 'album' | null,
+  id: null as string | null,
+  x: 0,
+  y: 0,
+  moved: false,
+  longPressTriggered: false,
+})
 
 const albumContextMenu = reactive({
   open: false,
@@ -697,29 +708,139 @@ function closeContextMenus() {
   mediaContextMenu.mediaId = null
 }
 
-function openAlbumContextMenu(event: MouseEvent, albumId: string) {
-  event.preventDefault()
-  event.stopPropagation()
+function openAlbumContextMenuAt(albumId: string, x: number, y: number) {
   albumContextMenu.open = true
   albumContextMenu.albumId = albumId
-  albumContextMenu.x = event.clientX
-  albumContextMenu.y = event.clientY
+  albumContextMenu.x = x
+  albumContextMenu.y = y
   mediaContextMenu.open = false
   mediaContextMenu.mediaId = null
   void preloadAlbumShareState(albumId)
+}
+
+function openAlbumContextMenu(event: MouseEvent, albumId: string) {
+  event.preventDefault()
+  event.stopPropagation()
+  openAlbumContextMenuAt(albumId, event.clientX, event.clientY)
+}
+
+function openMediaContextMenuAt(mediaId: string, x: number, y: number) {
+  selectMedia(mediaId)
+  mediaContextMenu.open = true
+  mediaContextMenu.mediaId = mediaId
+  mediaContextMenu.x = x
+  mediaContextMenu.y = y
+  albumContextMenu.open = false
+  albumContextMenu.albumId = null
+  void preloadMediaShareState(mediaId)
 }
 
 function openMediaContextMenu(event: MouseEvent, mediaId: string) {
   event.preventDefault()
   event.stopPropagation()
   selectMedia(mediaId, event)
-  mediaContextMenu.open = true
-  mediaContextMenu.mediaId = mediaId
-  mediaContextMenu.x = event.clientX
-  mediaContextMenu.y = event.clientY
-  albumContextMenu.open = false
-  albumContextMenu.albumId = null
-  void preloadMediaShareState(mediaId)
+  openMediaContextMenuAt(mediaId, event.clientX, event.clientY)
+}
+
+function cancelTouchGesture() {
+  if (touchGesture.timer) {
+    clearTimeout(touchGesture.timer)
+    touchGesture.timer = null
+  }
+  touchGesture.target = null
+  touchGesture.id = null
+  touchGesture.moved = false
+  touchGesture.longPressTriggered = false
+}
+
+function startTouchGesture(target: 'media' | 'album', id: string, event: TouchEvent) {
+  if (!isTouchUi.value || event.touches.length !== 1) return
+  cancelTouchGesture()
+
+  const touch = event.touches[0]
+  if (!touch) return
+
+  touchGesture.target = target
+  touchGesture.id = id
+  touchGesture.x = touch.clientX
+  touchGesture.y = touch.clientY
+  touchGesture.moved = false
+  touchGesture.longPressTriggered = false
+  touchGesture.timer = setTimeout(() => {
+    if (touchGesture.moved || !touchGesture.id || !touchGesture.target) return
+    touchGesture.longPressTriggered = true
+    suppressClickUntil.value = Date.now()
+
+    if (touchGesture.target === 'media') {
+      openMediaContextMenuAt(touchGesture.id, touchGesture.x, touchGesture.y)
+    } else {
+      openAlbumContextMenuAt(touchGesture.id, touchGesture.x, touchGesture.y)
+    }
+  }, 520)
+}
+
+function moveTouchGesture(event: TouchEvent) {
+  if (!touchGesture.timer || event.touches.length !== 1) return
+  const touch = event.touches[0]
+  if (!touch) return
+
+  const dx = Math.abs(touch.clientX - touchGesture.x)
+  const dy = Math.abs(touch.clientY - touchGesture.y)
+  if (dx > 10 || dy > 10) {
+    touchGesture.moved = true
+    if (touchGesture.timer) {
+      clearTimeout(touchGesture.timer)
+      touchGesture.timer = null
+    }
+  }
+}
+
+function finishMediaTouch(mediaId: string) {
+  if (!isTouchUi.value) return
+  const skipTapAction = touchGesture.longPressTriggered || touchGesture.moved
+  cancelTouchGesture()
+  if (skipTapAction) return
+
+  suppressClickUntil.value = Date.now()
+  openLightbox(mediaId)
+}
+
+function finishAlbumTouch(albumId: string) {
+  if (!isTouchUi.value) return
+  const skipTapAction = touchGesture.longPressTriggered || touchGesture.moved
+  cancelTouchGesture()
+  if (skipTapAction) return
+
+  suppressClickUntil.value = Date.now()
+  activeSection.value = 'all'
+  openAlbum(albumId)
+}
+
+function onMediaCardClick(mediaId: string, event: MouseEvent) {
+  if (isTouchUi.value) return
+  selectMedia(mediaId, event)
+}
+
+function onMediaCardDoubleClick(mediaId: string) {
+  if (isTouchUi.value) return
+  openLightbox(mediaId)
+}
+
+function onAlbumCardClick(albumId: string) {
+  if (Date.now() - suppressClickUntil.value < 260) return
+  activeSection.value = 'all'
+  openAlbum(albumId)
+}
+
+function isLongPressPending(target: 'media' | 'album', id: string) {
+  return (
+    isTouchUi.value &&
+    touchGesture.target === target &&
+    touchGesture.id === id &&
+    Boolean(touchGesture.timer) &&
+    !touchGesture.moved &&
+    !touchGesture.longPressTriggered
+  )
 }
 
 async function preloadAlbumShareState(albumId: string) {
@@ -1372,6 +1493,7 @@ function clearSelection() {
 }
 
 function startMarqueeSelect(event: PointerEvent) {
+  if (event.pointerType === 'touch') return
   if (event.button !== 0) return
   const target = event.target as HTMLElement
   if (!target) return
@@ -1974,6 +2096,17 @@ function resetEditorAdjustments() {
 
 function startCropDrag(event: PointerEvent, mode: 'move' | 'n' | 's' | 'w' | 'e' | 'nw' | 'ne' | 'sw' | 'se') {
   event.preventDefault()
+  event.stopPropagation()
+
+  const target = event.currentTarget as HTMLElement | null
+  if (target && typeof target.setPointerCapture === 'function') {
+    try {
+      target.setPointerCapture(event.pointerId)
+    } catch {
+      // ignore when capture is unavailable for this pointer
+    }
+  }
+
   cropDrag.active = true
   cropDrag.mode = mode
   cropDrag.startX = event.clientX
@@ -2151,6 +2284,11 @@ watch([activeAlbumId, activeMediaId, token, routeMode], () => {
 })
 
 onMounted(async () => {
+  isTouchUi.value =
+    window.matchMedia('(pointer: coarse)').matches ||
+    'ontouchstart' in window ||
+    navigator.maxTouchPoints > 0
+
   popStateHandler = () => {
     void applyRouteFromLocation()
   }
@@ -2178,6 +2316,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  cancelTouchGesture()
   if (popStateHandler) {
     window.removeEventListener('popstate', popStateHandler)
     popStateHandler = null
@@ -2356,9 +2495,13 @@ onBeforeUnmount(() => {
               v-for="album in pinnedAlbums"
               :key="`pin-${album.id}`"
               class="nav-item row album-row"
-              :class="{ active: activeAlbumId === album.id && activeSection === 'all' }"
-              @click="activeSection = 'all'; openAlbum(album.id)"
+              :class="{ active: activeAlbumId === album.id && activeSection === 'all', 'long-press-pending': isLongPressPending('album', album.id) }"
+              @click="onAlbumCardClick(album.id)"
               @contextmenu.prevent="openAlbumContextMenu($event, album.id)"
+              @touchstart.passive="startTouchGesture('album', album.id, $event)"
+              @touchmove.passive="moveTouchGesture($event)"
+              @touchend="finishAlbumTouch(album.id)"
+              @touchcancel="cancelTouchGesture"
               draggable="true"
               @dragstart="onPinnedDragStart(album.id)"
               @dragover.prevent
@@ -2376,7 +2519,7 @@ onBeforeUnmount(() => {
               v-for="node in albumTree"
               :key="node.album.id"
               class="nav-item row album-row"
-              :class="{ active: activeAlbumId === node.album.id && activeSection === 'all', 'drop-target': albumDropTargetId === node.album.id, 'media-drop-target': mediaDropTargetAlbumId === node.album.id }"
+              :class="{ active: activeAlbumId === node.album.id && activeSection === 'all', 'drop-target': albumDropTargetId === node.album.id, 'media-drop-target': mediaDropTargetAlbumId === node.album.id, 'long-press-pending': isLongPressPending('album', node.album.id) }"
               :style="{ paddingLeft: `${10 + node.depth * 16}px` }"
               draggable="true"
               @dragstart="onAlbumDragStart(node.album.id)"
@@ -2384,7 +2527,11 @@ onBeforeUnmount(() => {
               @drop.prevent.stop="onAlbumDrop(node.album.id, $event)"
               @dragend="onAlbumDragEnd"
               @contextmenu.prevent="openAlbumContextMenu($event, node.album.id)"
-              @click="activeSection = 'all'; openAlbum(node.album.id)"
+              @click="onAlbumCardClick(node.album.id)"
+              @touchstart.passive="startTouchGesture('album', node.album.id, $event)"
+              @touchmove.passive="moveTouchGesture($event)"
+              @touchend="finishAlbumTouch(node.album.id)"
+              @touchcancel="cancelTouchGesture"
             >
               <span class="row-main">
                 <button
@@ -2448,7 +2595,12 @@ onBeforeUnmount(() => {
               v-for="album in visibleSubalbums"
               :key="`subalbum-${album.id}`"
               class="photo-card album-card"
-              @click="openAlbum(album.id)"
+              :class="{ 'long-press-pending': isLongPressPending('album', album.id) }"
+              @click="onAlbumCardClick(album.id)"
+              @touchstart.passive="startTouchGesture('album', album.id, $event)"
+              @touchmove.passive="moveTouchGesture($event)"
+              @touchend="finishAlbumTouch(album.id)"
+              @touchcancel="cancelTouchGesture"
             >
               <div v-if="album.previewMedia.length > 0" class="album-preview-grid">
                 <div
@@ -2479,13 +2631,17 @@ onBeforeUnmount(() => {
               :key="item.id"
               class="photo-card"
               :data-media-id="item.id"
-              :class="{ active: activeMediaId === item.id, selected: selectedMediaSet.has(item.id) }"
+              :class="{ active: activeMediaId === item.id, selected: selectedMediaSet.has(item.id), 'long-press-pending': isLongPressPending('media', item.id) }"
               draggable="true"
               @dragstart="onMediaDragStart(item.id, $event)"
               @dragend="onMediaDragEnd"
-              @click="selectMedia(item.id, $event)"
+              @click="onMediaCardClick(item.id, $event)"
               @contextmenu.prevent="openMediaContextMenu($event, item.id)"
-              @dblclick="openLightbox(item.id)"
+              @dblclick="onMediaCardDoubleClick(item.id)"
+              @touchstart.passive="startTouchGesture('media', item.id, $event)"
+              @touchmove.passive="moveTouchGesture($event)"
+              @touchend="finishMediaTouch(item.id)"
+              @touchcancel="cancelTouchGesture"
             >
               <button class="card-menu-btn menu-dots-btn" @click.stop="openMediaContextMenu($event, item.id)">
                 ⋯
@@ -2766,6 +2922,7 @@ onBeforeUnmount(() => {
               class="editor-crop-stage"
               @pointermove="onCropPointerMove"
               @pointerup="stopCropDrag"
+              @pointercancel="stopCropDrag"
               @pointerleave="stopCropDrag"
             >
               <div ref="editorCropStage" class="editor-image-frame">
