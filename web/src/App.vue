@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api, type Album, type MediaItem, type Tag } from './api'
 
 type AlbumTreeNode = {
@@ -46,6 +46,7 @@ const mediaShareEnabled = ref<Record<string, boolean>>({})
 const albumShareEnabled = ref<Record<string, boolean>>({})
 
 const fileInput = ref<HTMLInputElement | null>(null)
+const lightboxStripRef = ref<HTMLDivElement | null>(null)
 const lightboxOpen = ref(false)
 const editModeOpen = ref(false)
 const createAlbumName = ref('')
@@ -84,6 +85,13 @@ const touchGesture = reactive({
   y: 0,
   moved: false,
   longPressTriggered: false,
+})
+
+const lightboxSwipe = reactive({
+  active: false,
+  pointerId: -1,
+  startX: 0,
+  startY: 0,
 })
 
 const albumContextMenu = reactive({
@@ -1475,6 +1483,51 @@ function closeLightbox() {
   lightboxOpen.value = false
 }
 
+function scrollActiveLightboxThumbIntoView() {
+  if (!lightboxOpen.value || !activeMediaId.value) return
+  const strip = lightboxStripRef.value
+  if (!strip) return
+  const target = strip.querySelector<HTMLElement>(`[data-lightbox-thumb-id="${activeMediaId.value}"]`)
+  if (!target) return
+  target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+}
+
+function onLightboxPointerDown(event: PointerEvent) {
+  if (event.pointerType !== 'touch') return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.lightbox-actions, .lightbox-strip, .overlay-close, .overlay-arrow')) return
+  lightboxSwipe.active = true
+  lightboxSwipe.pointerId = event.pointerId
+  lightboxSwipe.startX = event.clientX
+  lightboxSwipe.startY = event.clientY
+}
+
+function onLightboxPointerUp(event: PointerEvent) {
+  if (!lightboxSwipe.active || event.pointerId !== lightboxSwipe.pointerId) return
+
+  const dx = event.clientX - lightboxSwipe.startX
+  const dy = event.clientY - lightboxSwipe.startY
+  const absX = Math.abs(dx)
+  const absY = Math.abs(dy)
+  const horizontalSwipe = absX > 50 && absX > absY * 1.25
+
+  lightboxSwipe.active = false
+  lightboxSwipe.pointerId = -1
+
+  if (!horizontalSwipe || lightboxItems.value.length <= 1) return
+  if (dx < 0) {
+    nextLightbox()
+  } else {
+    prevLightbox()
+  }
+}
+
+function onLightboxPointerCancel(event: PointerEvent) {
+  if (event.pointerId !== lightboxSwipe.pointerId) return
+  lightboxSwipe.active = false
+  lightboxSwipe.pointerId = -1
+}
+
 function openEditMode(mediaId?: string) {
   if (mediaId) {
     selectMedia(mediaId)
@@ -2083,14 +2136,37 @@ async function toggleFavorite(mediaId: string, value?: boolean) {
 async function deleteMedia(mediaId: string) {
   if (!token.value) return
   try {
+    const currentItems = [...lightboxItems.value]
+    const currentIndex = currentItems.findIndex((item) => item.id === mediaId)
+
     await api.deleteMedia(authHeaders(), mediaId)
-    if (activeMediaId.value === mediaId) {
+
+    if (lightboxOpen.value) {
+      const remainingItems = currentItems.filter((item) => item.id !== mediaId)
+      if (remainingItems.length > 0) {
+        const nextIndex = currentIndex >= 0 && currentIndex < remainingItems.length ? currentIndex : 0
+        const nextItem = remainingItems[nextIndex]
+        if (nextItem) {
+          activeMediaId.value = nextItem.id
+          selectedMediaIds.value = [nextItem.id]
+        }
+      } else {
+        activeMediaId.value = null
+        selectedMediaIds.value = []
+        lightboxOpen.value = false
+      }
+    } else if (activeMediaId.value === mediaId) {
       activeMediaId.value = null
-      lightboxOpen.value = false
       editModeOpen.value = false
     }
+
     closeContextMenus()
     await loadAll()
+
+    if (lightboxOpen.value) {
+      await nextTick()
+      scrollActiveLightboxThumbIntoView()
+    }
   } catch (error) {
     message.value = (error as Error).message
   }
@@ -2562,6 +2638,15 @@ watch(visibleSubalbumPreviewMedia, (items) => {
     void loadThumb(preview.id)
   })
 })
+
+watch(
+  () => [lightboxOpen.value, activeMediaId.value, lightboxItems.value.length],
+  async ([isOpen, mediaId]) => {
+    if (!isOpen || !mediaId) return
+    await nextTick()
+    scrollActiveLightboxThumbIntoView()
+  },
+)
 
 watch([activeAlbumId, activeMediaId, token, routeMode], () => {
   if (!token.value || routeMode.value !== 'app' || syncingFromRoute.value) return
@@ -3314,7 +3399,12 @@ onBeforeUnmount(() => {
         <button class="overlay-close" @click="closeLightbox">×</button>
         <button v-if="lightboxItems.length > 1" class="overlay-arrow left" @click.stop="prevLightbox">‹</button>
 
-        <div class="overlay-content">
+        <div
+          class="overlay-content"
+          @pointerdown="onLightboxPointerDown"
+          @pointerup="onLightboxPointerUp"
+          @pointercancel="onLightboxPointerCancel"
+        >
           <div class="lightbox-actions">
             <button class="btn ghost" @click.stop="openEditMode(activeMedia.id)">Edit</button>
             <button class="btn ghost" @click.stop="toggleFavorite(activeMedia.id)">
@@ -3338,10 +3428,11 @@ onBeforeUnmount(() => {
             <span v-if="lightboxIndex >= 0">{{ lightboxIndex + 1 }} / {{ lightboxItems.length }}</span>
           </div>
 
-          <div v-if="lightboxItems.length > 1" class="lightbox-strip">
+          <div v-if="lightboxItems.length > 1" ref="lightboxStripRef" class="lightbox-strip">
             <button
               v-for="item in lightboxItems"
               :key="item.id"
+              :data-lightbox-thumb-id="item.id"
               class="lightbox-thumb"
               :class="{ active: item.id === activeMedia.id }"
               @click.stop="openLightbox(item.id)"
