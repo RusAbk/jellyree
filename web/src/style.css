@@ -1200,29 +1200,30 @@ label {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(245, 248, 255, 0.9);
+  background: rgba(245, 248, 255, 0.96);
   z-index: 40;
-  display: grid;
-  place-items: center;
-  padding: 24px;
+  display: flex;
+  padding: 0;
   touch-action: pan-y;
   overscroll-behavior: contain;
 }
 
 .overlay-content {
-  width: min(1220px, 94vw);
-  max-height: 90vh;
+  width: 100vw;
+  height: 100dvh;
+  max-height: none;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding-bottom: 88px;
+  padding: 64px 16px 88px;
   touch-action: pan-y;
   overscroll-behavior-x: contain;
 }
 
 .overlay-image {
   width: 100%;
-  max-height: 80vh;
+  max-height: calc(100dvh - 190px);
   object-fit: contain;
   border-radius: 0;
 }
@@ -1884,13 +1885,14 @@ label {
   }
 
   .overlay {
-    padding: 10px;
+    padding: 0;
   }
 
   .overlay-content {
     width: 100%;
-    max-height: calc(100vh - 20px);
-    padding-bottom: 70px;
+    max-height: none;
+    height: 100dvh;
+    padding: 58px 8px 72px;
   }
 
   .overlay-close {

@@ -1482,8 +1482,25 @@ function openLightbox(mediaId: string) {
   lightboxOpen.value = true
 }
 
+async function scrollActiveMediaCardIntoView() {
+  const activeId = activeMediaId.value
+  if (!activeId) return
+  await nextTick()
+  const masonry = masonryRef.value
+  if (!masonry) return
+  const target = Array.from(masonry.querySelectorAll<HTMLElement>('[data-media-id]')).find(
+    (element) => element.dataset.mediaId === activeId,
+  )
+  if (!target) return
+  target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+}
+
 function closeLightbox() {
   lightboxOpen.value = false
+  if (activeMediaId.value) {
+    selectedMediaIds.value = [activeMediaId.value]
+  }
+  void scrollActiveMediaCardIntoView()
 }
 
 function scrollActiveLightboxThumbIntoView() {
