@@ -23,6 +23,7 @@ const media = ref<MediaItem[]>([])
 const albums = ref<Album[]>([])
 const tags = ref<Tag[]>([])
 const thumbs = ref<Record<string, string>>({})
+const lightboxFullImage = ref<{ mediaId: string; url: string } | null>(null)
 const activeMediaId = ref<string | null>(null)
 const activeSection = ref<'all' | 'favorites' | 'tags'>('all')
 const activeAlbumId = ref('')
@@ -240,6 +241,14 @@ const cropDrag = reactive({
 })
 
 const activeMedia = computed(() => media.value.find((item) => item.id === activeMediaId.value) || null)
+const lightboxActiveImageSrc = computed(() => {
+  const item = activeMedia.value
+  if (!item) return ''
+  if (lightboxFullImage.value?.mediaId === item.id) {
+    return lightboxFullImage.value.url
+  }
+  return thumbs.value[item.id] || ''
+})
 const activeAlbum = computed(() => albums.value.find((album) => album.id === activeAlbumId.value) || null)
 const isPublicRoute = computed(() => routeMode.value !== 'app')
 
@@ -1270,6 +1279,10 @@ function canPreviewFromMeta(mediaId: string, mimeType: string, filename: string)
 }
 
 function onThumbError(mediaId: string) {
+  if (lightboxFullImage.value?.mediaId === mediaId) {
+    clearLightboxFullImage()
+    return
+  }
   thumbs.value[mediaId] = ''
 }
 
@@ -1279,6 +1292,43 @@ function clearThumb(mediaId: string) {
     URL.revokeObjectURL(previous)
   }
   delete thumbs.value[mediaId]
+}
+
+function clearLightboxFullImage() {
+  const current = lightboxFullImage.value
+  if (current?.url?.startsWith('blob:')) {
+    URL.revokeObjectURL(current.url)
+  }
+  lightboxFullImage.value = null
+}
+
+async function loadActiveLightboxFullImage() {
+  if (!lightboxOpen.value || !activeMedia.value || !token.value) return
+  const item = activeMedia.value
+
+  if (isHeicFile(item)) {
+    clearLightboxFullImage()
+    return
+  }
+
+  const mediaId = item.id
+
+  try {
+    const blob = await api.fetchFileBlob(token.value, mediaId)
+    const objectUrl = URL.createObjectURL(blob)
+
+    if (!lightboxOpen.value || activeMediaId.value !== mediaId) {
+      URL.revokeObjectURL(objectUrl)
+      return
+    }
+
+    clearLightboxFullImage()
+    lightboxFullImage.value = { mediaId, url: objectUrl }
+  } catch {
+    if (lightboxFullImage.value?.mediaId === mediaId) {
+      clearLightboxFullImage()
+    }
+  }
 }
 
 async function loadThumb(mediaId: string) {
@@ -1500,6 +1550,7 @@ async function scrollActiveMediaCardIntoView() {
 
 function closeLightbox() {
   lightboxOpen.value = false
+  clearLightboxFullImage()
   lightboxTagsEditing.value = false
   if (activeMediaId.value) {
     selectedMediaIds.value = [activeMediaId.value]
@@ -1528,7 +1579,7 @@ function onLightboxTouchStart(event: TouchEvent) {
   }
 
   const target = event.target as HTMLElement | null
-  if (target?.closest('.lightbox-actions, .lightbox-tag-editor, .lightbox-strip, .overlay-close, .overlay-arrow')) {
+  if (target?.closest('.lightbox-header, .lightbox-tag-editor, .lightbox-strip, .overlay-arrow')) {
     resetLightboxSwipe()
     return
   }
@@ -2491,6 +2542,13 @@ function mediaFilterStyle(_item?: MediaItem) {
   return {}
 }
 
+function lightboxContainStyle(src: string, item: MediaItem) {
+  return {
+    backgroundImage: `url("${src}")`,
+    ...mediaFilterStyle(item),
+  }
+}
+
 function mediaFilterStyleFromEditor() {
   const temperature = Number(editor.temperature || 0)
   const brightness = 100 + Number(editor.brightness || 0)
@@ -2696,6 +2754,7 @@ async function submitAuth() {
 
 function logout() {
   Object.keys(thumbs.value).forEach((mediaId) => clearThumb(mediaId))
+  clearLightboxFullImage()
   closeContextMenus()
   token.value = ''
   userName.value = ''
@@ -2758,6 +2817,17 @@ watch(
   },
 )
 
+watch(
+  () => [lightboxOpen.value, activeMediaId.value, token.value],
+  ([isOpen, mediaId]) => {
+    if (!isOpen || !mediaId) {
+      clearLightboxFullImage()
+      return
+    }
+    void loadActiveLightboxFullImage()
+  },
+)
+
 watch([activeAlbumId, activeMediaId, token, routeMode], () => {
   if (!token.value || routeMode.value !== 'app' || syncingFromRoute.value) return
   if (activeMediaId.value) {
@@ -2813,6 +2883,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointerdown', onGlobalPointerDown)
   window.removeEventListener('resize', updateLayoutFlags)
+  clearLightboxFullImage()
   if (toastTimer) {
     clearTimeout(toastTimer)
   }
@@ -3519,7 +3590,6 @@ onBeforeUnmount(() => {
       </Transition>
 
       <div v-if="lightboxOpen && activeMedia" class="overlay" @click.self="closeLightbox">
-        <button class="overlay-close" @click="closeLightbox">×</button>
         <button v-if="lightboxItems.length > 1" class="overlay-arrow left" @click.stop="prevLightbox">‹</button>
 
         <div
@@ -3529,78 +3599,86 @@ onBeforeUnmount(() => {
           @touchend="onLightboxTouchEnd"
           @touchcancel="onLightboxTouchCancel"
         >
-          <div class="lightbox-actions">
-            <button class="btn ghost" @click.stop="openEditMode(activeMedia.id)">Edit</button>
-            <button class="btn ghost" @click.stop="toggleFavorite(activeMedia.id)">
-              {{ activeMedia.isFavorite ? '★ Favorited' : '☆ Favorite' }}
-            </button>
-            <button class="btn ghost danger" @click.stop="deleteMedia(activeMedia.id)">Delete</button>
-          </div>
-
-          <div class="lightbox-tag-editor" @click.stop>
-            <label>Tags</label>
-            <div v-if="!lightboxTagsEditing" class="lightbox-tags-view">
-              <div class="chips" v-if="activeMedia.mediaTags.length > 0">
-                <span
-                  v-for="entry in activeMedia.mediaTags"
-                  :key="`lightbox-tag-${activeMedia.id}-${entry.tag.id}`"
-                  class="chip-lite"
-                >
-                  # {{ entry.tag.name }}
-                </span>
+          <div class="lightbox-shell">
+            <div class="lightbox-header" @click.stop>
+              <div class="overlay-meta">
+                <span class="overlay-filename">{{ activeMedia.filename }}</span>
+                <span v-if="lightboxIndex >= 0" class="overlay-counter">{{ lightboxIndex + 1 }} / {{ lightboxItems.length }}</span>
               </div>
-              <span v-else class="muted">—</span>
-              <button class="btn ghost" @click.stop="beginLightboxTagsEdit">Edit tags</button>
+
+              <div class="lightbox-actions">
+                <button class="btn ghost" @click.stop="openEditMode(activeMedia.id)">Edit</button>
+                <button class="btn ghost" @click.stop="toggleFavorite(activeMedia.id)">
+                  {{ activeMedia.isFavorite ? '★ Favorited' : '☆ Favorite' }}
+                </button>
+                <button class="btn ghost danger" @click.stop="deleteMedia(activeMedia.id)">Delete</button>
+                <button class="btn ghost" @click.stop="closeLightbox">Close</button>
+              </div>
             </div>
-            <div v-else class="lightbox-tags-edit">
-              <input
-                ref="lightboxTagsInputRef"
-                v-model="lightboxTagsInput"
-                class="input"
-                placeholder="tag1, tag2"
-                @click.stop
-                @blur="commitLightboxTagsEdit"
-                @keydown.enter.prevent="commitLightboxTagsEdit"
-                @keydown.esc.prevent="cancelLightboxTagsEdit"
-              />
-              <button class="btn ghost" :disabled="saving" @click.stop="cancelLightboxTagsEdit">Cancel</button>
-              <button class="btn" :disabled="saving" @click.stop="commitLightboxTagsEdit">Save</button>
+
+            <div class="lightbox-media-stage">
+              <div
+                v-if="lightboxActiveImageSrc && canPreviewInBrowser(activeMedia)"
+                class="lightbox-image-contain"
+                :style="lightboxContainStyle(lightboxActiveImageSrc, activeMedia)"
+                :aria-label="activeMedia.filename"
+                role="img"
+              ></div>
+              <div v-else class="lightbox-fallback">{{ activeMedia.filename }} · {{ activeMedia.mimeType }}</div>
             </div>
-          </div>
 
-          <img
-            v-if="thumbs[activeMedia.id] && canPreviewInBrowser(activeMedia)"
-            class="overlay-image"
-            :src="thumbs[activeMedia.id]"
-            :alt="activeMedia.filename"
-            :style="mediaFilterStyle(activeMedia)"
-            @error="onThumbError(activeMedia.id)"
-          />
-          <div v-else class="overlay-fallback">{{ activeMedia.filename }} · {{ activeMedia.mimeType }}</div>
+            <div class="lightbox-bottom">
+              <div class="lightbox-tag-editor" @click.stop>
+                <label>Tags</label>
+                <div v-if="!lightboxTagsEditing" class="lightbox-tags-view">
+                  <div class="chips" v-if="activeMedia.mediaTags.length > 0">
+                    <span
+                      v-for="entry in activeMedia.mediaTags"
+                      :key="`lightbox-tag-${activeMedia.id}-${entry.tag.id}`"
+                      class="chip-lite"
+                    >
+                      # {{ entry.tag.name }}
+                    </span>
+                  </div>
+                  <span v-else class="muted">—</span>
+                  <button class="btn ghost" @click.stop="beginLightboxTagsEdit">Edit tags</button>
+                </div>
+                <div v-else class="lightbox-tags-edit">
+                  <input
+                    ref="lightboxTagsInputRef"
+                    v-model="lightboxTagsInput"
+                    class="input"
+                    placeholder="tag1, tag2"
+                    @click.stop
+                    @blur="commitLightboxTagsEdit"
+                    @keydown.enter.prevent="commitLightboxTagsEdit"
+                    @keydown.esc.prevent="cancelLightboxTagsEdit"
+                  />
+                  <button class="btn ghost" :disabled="saving" @click.stop="cancelLightboxTagsEdit">Cancel</button>
+                  <button class="btn" :disabled="saving" @click.stop="commitLightboxTagsEdit">Save</button>
+                </div>
+              </div>
 
-          <div class="overlay-meta">
-            <span class="overlay-filename">{{ activeMedia.filename }}</span>
-            <span v-if="lightboxIndex >= 0" class="overlay-counter">{{ lightboxIndex + 1 }} / {{ lightboxItems.length }}</span>
-          </div>
-
-          <div v-if="lightboxItems.length > 1" ref="lightboxStripRef" class="lightbox-strip">
-            <button
-              v-for="item in lightboxItems"
-              :key="item.id"
-              :data-lightbox-thumb-id="item.id"
-              class="lightbox-thumb"
-              :class="{ active: item.id === activeMedia.id }"
-              @click.stop="openLightbox(item.id)"
-            >
-              <img
-                v-if="thumbs[item.id] && canPreviewInBrowser(item)"
-                :src="thumbs[item.id]"
-                :alt="item.filename"
-                loading="lazy"
-                @error="onThumbError(item.id)"
-              />
-              <span v-else>{{ item.mimeType.split('/')[1] || 'file' }}</span>
-            </button>
+              <div v-if="lightboxItems.length > 1" ref="lightboxStripRef" class="lightbox-strip">
+                <button
+                  v-for="item in lightboxItems"
+                  :key="item.id"
+                  :data-lightbox-thumb-id="item.id"
+                  class="lightbox-thumb"
+                  :class="{ active: item.id === activeMedia.id }"
+                  @click.stop="openLightbox(item.id)"
+                >
+                  <img
+                    v-if="thumbs[item.id] && canPreviewInBrowser(item)"
+                    :src="thumbs[item.id]"
+                    :alt="item.filename"
+                    loading="lazy"
+                    @error="onThumbError(item.id)"
+                  />
+                  <span v-else>{{ item.mimeType.split('/')[1] || 'file' }}</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
