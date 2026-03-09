@@ -168,6 +168,7 @@ const thumbLoadsInFlight = new Map<string, Promise<void>>()
 let progressiveThumbLoadRunId = 0
 let thumbVisibilityObserver: IntersectionObserver | null = null
 let thumbObserverRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let loadAllRunId = 0
 const thumbQueue = {
   active: 0,
   limit: 6,
@@ -405,6 +406,7 @@ const activeMediaLocationLabel = computed(() => {
   if (typeof latitude !== 'number' || typeof longitude !== 'number') return '—'
   return `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
 })
+const showGalleryLoadingState = computed(() => loading.value && media.value.length === 0)
 
 const marqueeStyle = computed(() => {
   const left = Math.min(marquee.startX, marquee.currentX)
@@ -606,7 +608,7 @@ async function applyRouteFromLocation() {
     }
   }
   syncingFromRoute.value = false
-  await loadAll()
+  await loadAll({ clearGrid: true })
 }
 
 function mediaShareUrl(tokenValue: string) {
@@ -1585,8 +1587,13 @@ function applyMediaToEditor(item: MediaItem | null) {
   targetAlbumId.value = item.albumMedia[0]?.albumId || ''
 }
 
-async function loadAll() {
+async function loadAll(options: { clearGrid?: boolean } = {}) {
   if (!token.value) return
+  const runId = ++loadAllRunId
+  if (options.clearGrid) {
+    media.value = []
+    selectedMediaIds.value = []
+  }
   loading.value = true
   message.value = ''
 
@@ -1602,6 +1609,8 @@ async function loadAll() {
       api.listAlbums(token.value),
       api.listTags(token.value),
     ])
+
+    if (runId !== loadAllRunId) return
 
     media.value = mediaResult
     albums.value = albumResult
@@ -1622,9 +1631,12 @@ async function loadAll() {
 
     await Promise.all(mediaResult.slice(0, 16).map((item) => loadThumb(item.id)))
   } catch (error) {
+    if (runId !== loadAllRunId) return
     message.value = (error as Error).message
   } finally {
-    loading.value = false
+    if (runId === loadAllRunId) {
+      loading.value = false
+    }
   }
 }
 
@@ -2974,7 +2986,7 @@ function logout() {
   localStorage.removeItem('jellyree_user')
 }
 
-watch([activeAlbumId, activeSection, search], () => {
+watch([activeAlbumId, activeSection, search], ([nextAlbumId, nextSection], [prevAlbumId, prevSection]) => {
   if (!token.value) return
   if (activeSection.value === 'favorites') {
     activeAlbumId.value = ''
@@ -2983,7 +2995,8 @@ watch([activeAlbumId, activeSection, search], () => {
   if (activeSection.value === 'tags') {
     activeAlbumId.value = ''
   }
-  void loadAll()
+  const isContextSwitch = nextAlbumId !== prevAlbumId || nextSection !== prevSection
+  void loadAll({ clearGrid: isContextSwitch })
 })
 
 watch(
@@ -3516,7 +3529,22 @@ onBeforeUnmount(() => {
 
           <div class="drop-hint">Drag photos to album tree on the left to move</div>
 
-          <div ref="masonryRef" class="masonry">
+          <div v-if="showGalleryLoadingState" class="gallery-loading-state" aria-live="polite">
+            <span class="gallery-loading-spinner" aria-hidden="true"></span>
+            <span>Loading photos…</span>
+          </div>
+
+          <div v-if="showGalleryLoadingState" class="gallery-skeleton-masonry" aria-hidden="true">
+            <article
+              v-for="index in 12"
+              :key="`gallery-skeleton-${index}`"
+              class="gallery-skeleton-card"
+            >
+              <div class="gallery-skeleton-shimmer" :style="{ animationDelay: `${(index % 6) * 0.08}s` }"></div>
+            </article>
+          </div>
+
+          <div v-else ref="masonryRef" class="masonry">
             <article
               v-for="album in visibleSubalbums"
               :key="`subalbum-${album.id}`"
@@ -3604,7 +3632,7 @@ onBeforeUnmount(() => {
               <div class="fav-indicator" v-if="item.isFavorite">★</div>
             </article>
           </div>
-          <div v-if="marquee.active" class="marquee-box" :style="marqueeStyle"></div>
+          <div v-if="marquee.active && !showGalleryLoadingState" class="marquee-box" :style="marqueeStyle"></div>
 
           <div class="fab-wrap" @click.stop>
             <div v-if="fabMenuOpen" class="fab-menu">
