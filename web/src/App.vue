@@ -72,10 +72,13 @@ const bulkTargetAlbumId = ref('')
 const editorCropStage = ref<HTMLDivElement | null>(null)
 const masonryRef = ref<HTMLElement | null>(null)
 const tagsInputRef = ref<HTMLInputElement | null>(null)
+const lightboxTagsInputRef = ref<HTMLInputElement | null>(null)
 const selectedMediaIds = ref<string[]>([])
 const suppressClickUntil = ref(0)
 const isTouchUi = ref(false)
 const suppressTagsCommitOnBlur = ref(false)
+const lightboxTagsEditing = ref(false)
+const lightboxTagsInput = ref('')
 
 const touchGesture = reactive({
   timer: null as ReturnType<typeof setTimeout> | null,
@@ -1497,6 +1500,7 @@ async function scrollActiveMediaCardIntoView() {
 
 function closeLightbox() {
   lightboxOpen.value = false
+  lightboxTagsEditing.value = false
   if (activeMediaId.value) {
     selectedMediaIds.value = [activeMediaId.value]
   }
@@ -1524,7 +1528,7 @@ function onLightboxTouchStart(event: TouchEvent) {
   }
 
   const target = event.target as HTMLElement | null
-  if (target?.closest('.lightbox-actions, .lightbox-strip, .overlay-close, .overlay-arrow')) {
+  if (target?.closest('.lightbox-actions, .lightbox-tag-editor, .lightbox-strip, .overlay-close, .overlay-arrow')) {
     resetLightboxSwipe()
     return
   }
@@ -1936,6 +1940,48 @@ function normalizeTags(input: string) {
       .filter(Boolean),
   )
   return [...unique].sort()
+}
+
+function beginLightboxTagsEdit() {
+  if (!activeMedia.value || !lightboxOpen.value) return
+  lightboxTagsInput.value = activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', ')
+  lightboxTagsEditing.value = true
+  nextTick(() => lightboxTagsInputRef.value?.focus())
+}
+
+function cancelLightboxTagsEdit() {
+  if (activeMedia.value) {
+    lightboxTagsInput.value = activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', ')
+  } else {
+    lightboxTagsInput.value = ''
+  }
+  lightboxTagsEditing.value = false
+}
+
+async function commitLightboxTagsEdit() {
+  if (!activeMedia.value || !token.value) return
+  if (saving.value) return
+
+  const mediaId = activeMedia.value.id
+  const nextTags = normalizeTags(lightboxTagsInput.value)
+  const currentTags = normalizeTags(activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(','))
+
+  if (nextTags.join('|') === currentTags.join('|')) {
+    lightboxTagsEditing.value = false
+    return
+  }
+
+  saving.value = true
+  try {
+    await api.updateMedia(authHeaders(), mediaId, { tags: nextTags })
+    await loadAll()
+    showToast('Tags updated')
+    lightboxTagsEditing.value = false
+  } catch (error) {
+    message.value = (error as Error).message
+  } finally {
+    saving.value = false
+  }
 }
 
 function beginDetailsFieldEdit(field: 'filename' | 'tags' | 'album' | 'metadataCreatedAt' | 'metadataModifiedAt' | 'location') {
@@ -2675,6 +2721,12 @@ watch([activeAlbumId, activeSection, search], () => {
 
 watch(activeMedia, (item) => {
   applyMediaToEditor(item)
+  if (item) {
+    lightboxTagsInput.value = item.mediaTags.map((entry) => entry.tag.name).join(', ')
+  } else {
+    lightboxTagsInput.value = ''
+    lightboxTagsEditing.value = false
+  }
   if (!item) {
     mobileDetailsOpen.value = false
   }
@@ -3485,6 +3537,37 @@ onBeforeUnmount(() => {
             <button class="btn ghost danger" @click.stop="deleteMedia(activeMedia.id)">Delete</button>
           </div>
 
+          <div class="lightbox-tag-editor" @click.stop>
+            <label>Tags</label>
+            <div v-if="!lightboxTagsEditing" class="lightbox-tags-view">
+              <div class="chips" v-if="activeMedia.mediaTags.length > 0">
+                <span
+                  v-for="entry in activeMedia.mediaTags"
+                  :key="`lightbox-tag-${activeMedia.id}-${entry.tag.id}`"
+                  class="chip-lite"
+                >
+                  # {{ entry.tag.name }}
+                </span>
+              </div>
+              <span v-else class="muted">—</span>
+              <button class="btn ghost" @click.stop="beginLightboxTagsEdit">Edit tags</button>
+            </div>
+            <div v-else class="lightbox-tags-edit">
+              <input
+                ref="lightboxTagsInputRef"
+                v-model="lightboxTagsInput"
+                class="input"
+                placeholder="tag1, tag2"
+                @click.stop
+                @blur="commitLightboxTagsEdit"
+                @keydown.enter.prevent="commitLightboxTagsEdit"
+                @keydown.esc.prevent="cancelLightboxTagsEdit"
+              />
+              <button class="btn ghost" :disabled="saving" @click.stop="cancelLightboxTagsEdit">Cancel</button>
+              <button class="btn" :disabled="saving" @click.stop="commitLightboxTagsEdit">Save</button>
+            </div>
+          </div>
+
           <img
             v-if="thumbs[activeMedia.id] && canPreviewInBrowser(activeMedia)"
             class="overlay-image"
@@ -3496,8 +3579,8 @@ onBeforeUnmount(() => {
           <div v-else class="overlay-fallback">{{ activeMedia.filename }} · {{ activeMedia.mimeType }}</div>
 
           <div class="overlay-meta">
-            <span>{{ activeMedia.filename }}</span>
-            <span v-if="lightboxIndex >= 0">{{ lightboxIndex + 1 }} / {{ lightboxItems.length }}</span>
+            <span class="overlay-filename">{{ activeMedia.filename }}</span>
+            <span v-if="lightboxIndex >= 0" class="overlay-counter">{{ lightboxIndex + 1 }} / {{ lightboxItems.length }}</span>
           </div>
 
           <div v-if="lightboxItems.length > 1" ref="lightboxStripRef" class="lightbox-strip">

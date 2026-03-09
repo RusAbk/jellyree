@@ -1243,7 +1243,8 @@ label {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 64px 16px 88px;
+  padding: 64px 16px 136px;
+  overflow-y: auto;
   touch-action: pan-y;
   overscroll-behavior-x: contain;
 }
@@ -1270,15 +1271,58 @@ label {
 .overlay-meta {
   color: var(--text);
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   font-size: 14px;
+  min-width: 0;
+}
+
+.overlay-filename {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overlay-counter {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .lightbox-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.lightbox-tag-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+  padding: 8px;
+}
+
+.lightbox-tags-view {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lightbox-tags-view .chips {
+  flex: 1;
+}
+
+.lightbox-tags-edit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .lightbox-strip {
@@ -1911,6 +1955,15 @@ label {
     flex-wrap: wrap;
   }
 
+  .lightbox-tags-view {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .lightbox-tags-edit {
+    grid-template-columns: 1fr;
+  }
+
   .overlay {
     padding: 0;
   }
@@ -1919,7 +1972,7 @@ label {
     width: 100%;
     max-height: none;
     height: 100dvh;
-    padding: 58px 8px 72px;
+    padding: 58px 8px 118px;
   }
 
   .overlay-close {
