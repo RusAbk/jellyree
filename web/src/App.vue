@@ -165,6 +165,9 @@ const shareDialog = reactive({
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 let popStateHandler: (() => void) | null = null
 const thumbLoadsInFlight = new Map<string, Promise<void>>()
+let progressiveThumbLoadRunId = 0
+let thumbVisibilityObserver: IntersectionObserver | null = null
+let thumbObserverRefreshTimer: ReturnType<typeof setTimeout> | null = null
 const thumbQueue = {
   active: 0,
   limit: 6,
@@ -1464,6 +1467,113 @@ async function loadThumb(mediaId: string) {
   }
 }
 
+async function loadThumbsProgressively(items: MediaItem[]) {
+  const runId = ++progressiveThumbLoadRunId
+  const ids = items
+    .map((item) => item.id)
+    .filter((id) => !thumbs.value[id])
+
+  if (ids.length === 0) return
+
+  const batchSize = 24
+  for (let index = 0; index < ids.length; index += batchSize) {
+    if (runId !== progressiveThumbLoadRunId) return
+    const batch = ids.slice(index, index + batchSize)
+    await Promise.all(batch.map((id) => loadThumb(id)))
+    if (runId !== progressiveThumbLoadRunId) return
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  }
+}
+
+function teardownThumbVisibilityObserver() {
+  if (thumbVisibilityObserver) {
+    thumbVisibilityObserver.disconnect()
+    thumbVisibilityObserver = null
+  }
+  if (thumbObserverRefreshTimer) {
+    clearTimeout(thumbObserverRefreshTimer)
+    thumbObserverRefreshTimer = null
+  }
+}
+
+function ensureThumbVisibilityObserver() {
+  if (thumbVisibilityObserver || typeof window === 'undefined' || !('IntersectionObserver' in window)) return
+  thumbVisibilityObserver = new IntersectionObserver(
+    (entries, observer) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue
+        const target = entry.target as HTMLElement
+        const mediaId = target.dataset.mediaId
+        observer.unobserve(target)
+        if (!mediaId || thumbs.value[mediaId]) continue
+        void loadThumb(mediaId)
+      }
+    },
+    {
+      root: null,
+      rootMargin: '320px 0px',
+      threshold: 0.01,
+    },
+  )
+}
+
+async function refreshThumbVisibilityObserver() {
+  if (!token.value || routeMode.value !== 'app') return
+  if (typeof window === 'undefined') return
+
+  ensureThumbVisibilityObserver()
+  if (!thumbVisibilityObserver) return
+
+  await nextTick()
+
+  const masonry = masonryRef.value
+  if (!masonry) return
+
+  thumbVisibilityObserver.disconnect()
+  const cards = Array.from(masonry.querySelectorAll<HTMLElement>('.photo-card[data-media-id]'))
+  for (const card of cards) {
+    const mediaId = card.dataset.mediaId
+    if (!mediaId || thumbs.value[mediaId]) continue
+    thumbVisibilityObserver.observe(card)
+  }
+}
+
+async function loadThumbsNearViewport() {
+  if (!token.value || routeMode.value !== 'app') return
+  if (typeof window === 'undefined') return
+
+  await nextTick()
+
+  const masonry = masonryRef.value
+  if (!masonry) return
+
+  const cards = Array.from(masonry.querySelectorAll<HTMLElement>('.photo-card[data-media-id]'))
+  const viewportTop = -320
+  const viewportBottom = window.innerHeight + 320
+  const prioritizedIds = cards
+    .filter((card) => {
+      const mediaId = card.dataset.mediaId
+      if (!mediaId || thumbs.value[mediaId]) return false
+      const rect = card.getBoundingClientRect()
+      return rect.bottom >= viewportTop && rect.top <= viewportBottom
+    })
+    .map((card) => card.dataset.mediaId as string)
+    .slice(0, 40)
+
+  if (prioritizedIds.length === 0) return
+  await Promise.all(prioritizedIds.map((id) => loadThumb(id)))
+}
+
+function scheduleThumbVisibilityRefresh() {
+  if (thumbObserverRefreshTimer) {
+    clearTimeout(thumbObserverRefreshTimer)
+  }
+  thumbObserverRefreshTimer = setTimeout(() => {
+    thumbObserverRefreshTimer = null
+    void refreshThumbVisibilityObserver()
+  }, 0)
+}
+
 function applyMediaToEditor(item: MediaItem | null) {
   if (!item) return
   editor.filename = splitFilenameParts(item.filename).baseName
@@ -1825,6 +1935,7 @@ function updateLayoutFlags() {
     mobileSelectMode.value = false
     closeMobileUserMenu()
   }
+  scheduleThumbVisibilityRefresh()
 }
 
 function openCreateAlbumDialog() {
@@ -2913,6 +3024,11 @@ watch(filteredMedia, (items) => {
   if (activeMediaId.value && !allowed.has(activeMediaId.value)) {
     activeMediaId.value = selectedMediaIds.value[0] || null
   }
+  scheduleThumbVisibilityRefresh()
+  void (async () => {
+    await loadThumbsNearViewport()
+    await loadThumbsProgressively(items)
+  })()
 })
 
 watch(visibleSubalbumPreviewMedia, (items) => {
@@ -2996,6 +3112,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerup', onWindowPointerUp)
   window.removeEventListener('pointerdown', onGlobalPointerDown)
   window.removeEventListener('resize', updateLayoutFlags)
+  teardownThumbVisibilityObserver()
   clearLightboxFullImage()
   if (toastTimer) {
     clearTimeout(toastTimer)
