@@ -533,6 +533,52 @@ body {
   padding-bottom: 8px;
 }
 
+.gallery-head > div {
+  min-width: 0;
+}
+
+.gallery-breadcrumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.gallery-breadcrumb {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 0;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-block;
+  max-width: min(34vw, 260px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.gallery-breadcrumb:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.gallery-breadcrumb.current {
+  color: var(--text);
+  font-weight: 600;
+  cursor: default;
+}
+
+.gallery-breadcrumb:disabled {
+  opacity: 1;
+}
+
+.gallery-breadcrumb-sep {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
 .gallery-title {
   font-size: 22px;
   font-weight: 700;

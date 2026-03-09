@@ -19,6 +19,15 @@ type PersistedAppViewState = {
   lightboxOpen: boolean
 }
 
+type GalleryBreadcrumb = {
+  key: string
+  label: string
+  current: boolean
+  type: 'root' | 'section' | 'album'
+  albumId?: string
+  section?: 'all' | 'favorites' | 'tags'
+}
+
 const APP_VIEW_STATE_KEY = 'jellyree_app_view_state'
 
 const token = ref(localStorage.getItem('jellyree_token') || '')
@@ -314,6 +323,76 @@ const sortedTags = computed(() =>
 )
 
 const activeTag = computed(() => tags.value.find((tag) => tag.id === activeTagId.value) || null)
+const activeAlbumChain = computed(() => {
+  if (!activeAlbumId.value) return []
+
+  const byId = new Map(albums.value.map((album) => [album.id, album]))
+  const chain: Album[] = []
+  const visited = new Set<string>()
+  let cursor = byId.get(activeAlbumId.value) || null
+
+  while (cursor && !visited.has(cursor.id)) {
+    chain.push(cursor)
+    visited.add(cursor.id)
+    cursor = cursor.parentId ? byId.get(cursor.parentId) || null : null
+  }
+
+  return chain.reverse()
+})
+const galleryBreadcrumbs = computed<GalleryBreadcrumb[]>(() => {
+  const crumbs: GalleryBreadcrumb[] = []
+
+  if (activeSection.value === 'all') {
+    crumbs.push({
+      key: 'root',
+      label: 'All photos',
+      current: !activeAlbumId.value,
+      type: 'root',
+      section: 'all',
+    })
+
+    for (const album of activeAlbumChain.value) {
+      crumbs.push({
+        key: `album-${album.id}`,
+        label: album.name,
+        current: album.id === activeAlbumId.value,
+        type: 'album',
+        albumId: album.id,
+      })
+    }
+
+    return crumbs
+  }
+
+  crumbs.push({
+    key: 'all',
+    label: 'All photos',
+    current: false,
+    type: 'root',
+    section: 'all',
+  })
+
+  if (activeSection.value === 'favorites') {
+    crumbs.push({
+      key: 'favorites',
+      label: 'Favorites',
+      current: true,
+      type: 'section',
+      section: 'favorites',
+    })
+    return crumbs
+  }
+
+  const tagLabel = activeTag.value ? `#${activeTag.value.name}` : 'Tag'
+  crumbs.push({
+    key: 'tags',
+    label: tagLabel,
+    current: true,
+    type: 'section',
+    section: 'tags',
+  })
+  return crumbs
+})
 const parsedTagsInput = computed(() => {
   const raw = editor.tagsInput
   const parts = raw.split(',')
@@ -1698,6 +1777,32 @@ function openTag(tagId: string) {
   activeTagId.value = tagId
   activeMediaId.value = null
   closeContextMenus()
+}
+
+function onBreadcrumbClick(crumb: GalleryBreadcrumb) {
+  if (crumb.current) return
+
+  if (crumb.type === 'root') {
+    activeSection.value = 'all'
+    goRoot()
+    return
+  }
+
+  if (crumb.type === 'album' && crumb.albumId) {
+    openAlbum(crumb.albumId)
+    return
+  }
+
+  if (crumb.type === 'section' && crumb.section === 'favorites') {
+    activeSection.value = 'favorites'
+    activeTagId.value = ''
+    activeMediaId.value = null
+    return
+  }
+
+  if (crumb.type === 'section' && crumb.section === 'tags' && activeTagId.value) {
+    openTag(activeTagId.value)
+  }
 }
 
 function applyTagSuggestion(tagName: string) {
@@ -3514,6 +3619,20 @@ onBeforeUnmount(() => {
         <main class="gallery-main" @pointerdown="startMarqueeSelect">
           <div class="gallery-head">
             <div>
+              <nav class="gallery-breadcrumbs" aria-label="Gallery breadcrumbs">
+                <template v-for="(crumb, index) in galleryBreadcrumbs" :key="crumb.key">
+                  <button
+                    type="button"
+                    class="gallery-breadcrumb"
+                    :class="{ current: crumb.current }"
+                    :disabled="crumb.current"
+                    @click="onBreadcrumbClick(crumb)"
+                  >
+                    {{ crumb.label }}
+                  </button>
+                  <span v-if="index < galleryBreadcrumbs.length - 1" class="gallery-breadcrumb-sep" aria-hidden="true">/</span>
+                </template>
+              </nav>
               <div class="gallery-title">
                 {{ activeSection === 'favorites' ? 'Favorites' : (activeSection === 'tags' ? (activeTag ? `#${activeTag.name}` : 'Tag') : (activeAlbum ? activeAlbum.name : 'All photos')) }}
               </div>
