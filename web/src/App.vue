@@ -10,6 +10,17 @@ type AlbumTreeNode = {
 
 type MobileMenuScreen = 'main' | 'library' | 'bulk'
 
+type PersistedAppViewState = {
+  activeSection: 'all' | 'favorites' | 'tags'
+  activeAlbumId: string
+  activeTagId: string
+  search: string
+  activeMediaId: string | null
+  lightboxOpen: boolean
+}
+
+const APP_VIEW_STATE_KEY = 'jellyree_app_view_state'
+
 const token = ref(localStorage.getItem('jellyree_token') || '')
 const userName = ref(localStorage.getItem('jellyree_user') || '')
 const mode = ref<'login' | 'register'>('login')
@@ -422,6 +433,46 @@ function authHeaders() {
   return token.value
 }
 
+function readPersistedAppViewState(): PersistedAppViewState | null {
+  try {
+    const raw = localStorage.getItem(APP_VIEW_STATE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<PersistedAppViewState>
+    if (!parsed || typeof parsed !== 'object') return null
+
+    const section = parsed.activeSection
+    if (section !== 'all' && section !== 'favorites' && section !== 'tags') return null
+
+    return {
+      activeSection: section,
+      activeAlbumId: typeof parsed.activeAlbumId === 'string' ? parsed.activeAlbumId : '',
+      activeTagId: typeof parsed.activeTagId === 'string' ? parsed.activeTagId : '',
+      search: typeof parsed.search === 'string' ? parsed.search : '',
+      activeMediaId: typeof parsed.activeMediaId === 'string' && parsed.activeMediaId ? parsed.activeMediaId : null,
+      lightboxOpen: parsed.lightboxOpen === true,
+    }
+  } catch {
+    return null
+  }
+}
+
+function persistAppViewState() {
+  if (routeMode.value !== 'app' || !token.value) return
+  const snapshot: PersistedAppViewState = {
+    activeSection: activeSection.value,
+    activeAlbumId: activeAlbumId.value,
+    activeTagId: activeTagId.value,
+    search: search.value,
+    activeMediaId: activeMediaId.value,
+    lightboxOpen: lightboxOpen.value,
+  }
+  localStorage.setItem(APP_VIEW_STATE_KEY, JSON.stringify(snapshot))
+}
+
+function clearPersistedAppViewState() {
+  localStorage.removeItem(APP_VIEW_STATE_KEY)
+}
+
 function readRouteFromLocation() {
   const path = window.location.pathname.replace(/\/+$/, '') || '/'
   const sharedMediaMatch = path.match(/^\/shared\/media\/([^/]+)$/)
@@ -513,12 +564,43 @@ async function applyRouteFromLocation() {
   if (!token.value) return
 
   syncingFromRoute.value = true
+  lightboxOpen.value = false
   activeSection.value = 'all'
+  activeTagId.value = ''
   activeAlbumId.value = routeAlbumId.value || ''
+
   if (routeMediaId.value) {
     activeMediaId.value = routeMediaId.value
-  } else if (!routeAlbumId.value) {
+    const persisted = readPersistedAppViewState()
+    if (persisted?.lightboxOpen && persisted.activeMediaId === routeMediaId.value) {
+      lightboxOpen.value = true
+    }
+  } else if (routeAlbumId.value) {
     activeMediaId.value = null
+    const persisted = readPersistedAppViewState()
+    if (persisted) {
+      search.value = persisted.search
+    }
+  } else {
+    const persisted = readPersistedAppViewState()
+    if (persisted) {
+      search.value = persisted.search
+      activeSection.value = persisted.activeSection
+      if (persisted.activeSection === 'all') {
+        activeAlbumId.value = persisted.activeAlbumId
+        activeTagId.value = ''
+      } else if (persisted.activeSection === 'tags') {
+        activeAlbumId.value = ''
+        activeTagId.value = persisted.activeTagId
+      } else {
+        activeAlbumId.value = ''
+        activeTagId.value = ''
+      }
+      activeMediaId.value = persisted.activeMediaId
+      lightboxOpen.value = persisted.lightboxOpen && Boolean(persisted.activeMediaId)
+    } else {
+      activeMediaId.value = null
+    }
   }
   syncingFromRoute.value = false
   await loadAll()
@@ -1410,7 +1492,15 @@ async function loadAll() {
     tags.value = tagResult
 
     const firstMedia = mediaResult.length > 0 ? mediaResult[0] : undefined
-    if (firstMedia && !activeMedia.value) {
+    const canAutoSelectFirstMedia =
+      !activeMedia.value &&
+      !routeMediaId.value &&
+      !routeAlbumId.value &&
+      activeSection.value === 'all' &&
+      !activeAlbumId.value &&
+      !activeTagId.value
+
+    if (firstMedia && canAutoSelectFirstMedia) {
       activeMediaId.value = firstMedia.id
     }
 
@@ -2755,6 +2845,7 @@ async function submitAuth() {
 function logout() {
   Object.keys(thumbs.value).forEach((mediaId) => clearThumb(mediaId))
   clearLightboxFullImage()
+  clearPersistedAppViewState()
   closeContextMenus()
   token.value = ''
   userName.value = ''
@@ -2777,6 +2868,22 @@ watch([activeAlbumId, activeSection, search], () => {
   }
   void loadAll()
 })
+
+watch(
+  () => [
+    routeMode.value,
+    token.value,
+    activeSection.value,
+    activeAlbumId.value,
+    activeTagId.value,
+    search.value,
+    activeMediaId.value,
+    lightboxOpen.value,
+  ],
+  () => {
+    persistAppViewState()
+  },
+)
 
 watch(activeMedia, (item) => {
   applyMediaToEditor(item)
