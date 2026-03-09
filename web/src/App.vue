@@ -1437,7 +1437,9 @@ async function loadThumb(mediaId: string) {
         180,
         Math.min(960, Math.round(targetBase * Math.max(1, Math.min(2, window.devicePixelRatio || 1)))),
       )
-      const blob = await api.fetchThumbBlob(token.value as string, mediaId, width)
+      const mediaItem = media.value.find((item) => item.id === mediaId)
+      const version = mediaItem?.updatedAt ? Date.parse(mediaItem.updatedAt) : undefined
+      const blob = await api.fetchThumbBlob(token.value as string, mediaId, width, Number.isFinite(version) ? version : undefined)
       thumbs.value[mediaId] = URL.createObjectURL(blob)
     } catch {
       try {

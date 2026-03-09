@@ -346,8 +346,39 @@ export const api = {
 
     return response.blob()
   },
-  fetchThumbBlob: async (token: string, mediaId: string, width = 640) => {
-    const response = await fetch(`${API_BASE}/media/${mediaId}/thumb?w=${encodeURIComponent(String(width))}`, {
+  fetchThumbBlob: async (token: string, mediaId: string, width = 640, version?: string | number) => {
+    const versionParam = typeof version === 'number' || typeof version === 'string'
+      ? `&v=${encodeURIComponent(String(version))}`
+      : ''
+    const thumbUrl = `${API_BASE}/media/${mediaId}/thumb?w=${encodeURIComponent(String(width))}${versionParam}`
+    const request = new Request(thumbUrl)
+
+    if (typeof window !== 'undefined' && 'caches' in window) {
+      try {
+        const cache = await caches.open('jellyree-thumbs-v1')
+        const cached = await cache.match(request)
+        if (cached?.ok) {
+          return cached.blob()
+        }
+
+        const response = await fetch(request, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+
+        if (!response.ok) {
+          throw new Error('Cannot load thumbnail')
+        }
+
+        await cache.put(request, response.clone())
+        return response.blob()
+      } catch {
+        // fallback to direct fetch below
+      }
+    }
+
+    const response = await fetch(request, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
