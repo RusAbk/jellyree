@@ -14,6 +14,8 @@ type PersistedAppViewState = {
   activeSection: 'all' | 'favorites' | 'tags'
   activeAlbumId: string
   activeTagId: string
+  selectedTagIds: string[]
+  tagFilterMode: 'and' | 'or'
   search: string
   activeMediaId: string | null
   lightboxOpen: boolean
@@ -26,6 +28,19 @@ type GalleryBreadcrumb = {
   type: 'root' | 'section' | 'album'
   albumId?: string
   section?: 'all' | 'favorites' | 'tags'
+}
+
+type ParsedTagInput = {
+  committed: string[]
+  committedSet: Set<string>
+  draftRaw: string
+  draft: string
+}
+
+type EditingTagChip = {
+  key: string
+  label: string
+  draft: boolean
 }
 
 const APP_VIEW_STATE_KEY = 'jellyree_app_view_state'
@@ -48,6 +63,8 @@ const activeMediaId = ref<string | null>(null)
 const activeSection = ref<'all' | 'favorites' | 'tags'>('all')
 const activeAlbumId = ref('')
 const activeTagId = ref('')
+const selectedTagFilterIds = ref<string[]>([])
+const tagFilterMode = ref<'and' | 'or'>('or')
 const search = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -98,6 +115,7 @@ const selectedMediaIds = ref<string[]>([])
 const suppressClickUntil = ref(0)
 const isTouchUi = ref(false)
 const suppressTagsCommitOnBlur = ref(false)
+const suppressLightboxTagsCommitOnBlur = ref(false)
 const lightboxTagsEditing = ref(false)
 const lightboxTagsInput = ref('')
 
@@ -322,7 +340,11 @@ const sortedTags = computed(() =>
   [...tags.value].sort((a, b) => a.name.localeCompare(b.name)),
 )
 
-const activeTag = computed(() => tags.value.find((tag) => tag.id === activeTagId.value) || null)
+const selectedTagFilterSet = computed(() => new Set(selectedTagFilterIds.value))
+const selectedFilterTags = computed(() =>
+  sortedTags.value.filter((tag) => selectedTagFilterSet.value.has(tag.id)),
+)
+
 const activeAlbumChain = computed(() => {
   if (!activeAlbumId.value) return []
 
@@ -380,44 +402,97 @@ const galleryBreadcrumbs = computed<GalleryBreadcrumb[]>(() => {
       type: 'section',
       section: 'favorites',
     })
-    return crumbs
   }
-
-  const tagLabel = activeTag.value ? `#${activeTag.value.name}` : 'Tag'
-  crumbs.push({
-    key: 'tags',
-    label: tagLabel,
-    current: true,
-    type: 'section',
-    section: 'tags',
-  })
   return crumbs
 })
-const parsedTagsInput = computed(() => {
-  const raw = editor.tagsInput
+
+const galleryTitle = computed(() => {
+  if (activeSection.value === 'favorites') return 'Favorites'
+  if (activeAlbum.value) return activeAlbum.value.name
+  return 'All photos'
+})
+
+function parseTagInput(raw: string): ParsedTagInput {
   const parts = raw.split(',')
   const draftRaw = parts.pop() ?? ''
-  const selected = new Set(
-    parts
-      .map((part) => part.trim().toLowerCase())
-      .filter(Boolean),
+  const committed = Array.from(
+    new Set(
+      parts
+        .map((part) => part.trim().toLowerCase())
+        .filter(Boolean),
+    ),
   )
   return {
-    selected,
+    committed,
+    committedSet: new Set(committed),
     draftRaw,
     draft: draftRaw.trim().toLowerCase(),
   }
+}
+
+function buildTagSuggestions(parsed: ParsedTagInput) {
+  return sortedTags.value.filter((tag) => {
+    const normalized = tag.name.toLowerCase()
+    if (parsed.committedSet.has(normalized)) return false
+    if (!parsed.draft) return true
+    return normalized.startsWith(parsed.draft)
+  })
+}
+
+const parsedTagsInput = computed(() => {
+  return parseTagInput(editor.tagsInput)
+})
+
+const parsedLightboxTagsInput = computed(() => {
+  return parseTagInput(lightboxTagsInput.value)
+})
+
+const detailsEditingTagChips = computed<EditingTagChip[]>(() => {
+  const chips = parsedTagsInput.value.committed.map((name) => ({
+    key: `details-committed-${name}`,
+    label: name,
+    draft: false,
+  }))
+
+  const draftLabel = parsedTagsInput.value.draftRaw.trim()
+  if (draftLabel) {
+    chips.push({
+      key: `details-draft-${draftLabel.toLowerCase()}`,
+      label: draftLabel,
+      draft: true,
+    })
+  }
+
+  return chips
+})
+
+const lightboxEditingTagChips = computed<EditingTagChip[]>(() => {
+  const chips = parsedLightboxTagsInput.value.committed.map((name) => ({
+    key: `lightbox-committed-${name}`,
+    label: name,
+    draft: false,
+  }))
+
+  const draftLabel = parsedLightboxTagsInput.value.draftRaw.trim()
+  if (draftLabel) {
+    chips.push({
+      key: `lightbox-draft-${draftLabel.toLowerCase()}`,
+      label: draftLabel,
+      draft: true,
+    })
+  }
+
+  return chips
 })
 
 const tagSuggestions = computed(() => {
   if (activeDetailsField.value !== 'tags') return []
-  const { draft, selected } = parsedTagsInput.value
-  if (!draft) return []
+  return buildTagSuggestions(parsedTagsInput.value)
+})
 
-  return sortedTags.value.filter((tag) => {
-    const name = tag.name.toLowerCase()
-    return name.startsWith(draft) && !selected.has(name)
-  })
+const lightboxTagSuggestions = computed(() => {
+  if (!lightboxTagsEditing.value) return []
+  return buildTagSuggestions(parsedLightboxTagsInput.value)
 })
 
 const filteredMedia = computed(() => {
@@ -428,8 +503,14 @@ const filteredMedia = computed(() => {
     base = base.filter((item) => item.isFavorite)
   }
 
-  if (activeSection.value === 'tags' && activeTagId.value) {
-    base = base.filter((item) => item.mediaTags.some((entry) => entry.tag.id === activeTagId.value))
+  if (selectedTagFilterIds.value.length > 0) {
+    base = base.filter((item) => {
+      const itemTagIds = new Set(item.mediaTags.map((entry) => entry.tag.id))
+      if (tagFilterMode.value === 'and') {
+        return selectedTagFilterIds.value.every((tagId) => itemTagIds.has(tagId))
+      }
+      return selectedTagFilterIds.value.some((tagId) => itemTagIds.has(tagId))
+    })
   }
 
   const filtered = !q
@@ -528,10 +609,21 @@ function readPersistedAppViewState(): PersistedAppViewState | null {
     const section = parsed.activeSection
     if (section !== 'all' && section !== 'favorites' && section !== 'tags') return null
 
+    const selectedTagIds = Array.isArray(parsed.selectedTagIds)
+      ? parsed.selectedTagIds.filter((id): id is string => typeof id === 'string')
+      : []
+    const fallbackTagId = typeof parsed.activeTagId === 'string' ? parsed.activeTagId : ''
+    const normalizedSelectedTagIds = selectedTagIds.length > 0
+      ? selectedTagIds
+      : (fallbackTagId ? [fallbackTagId] : [])
+    const normalizedFilterMode = parsed.tagFilterMode === 'and' ? 'and' : 'or'
+
     return {
       activeSection: section,
       activeAlbumId: typeof parsed.activeAlbumId === 'string' ? parsed.activeAlbumId : '',
-      activeTagId: typeof parsed.activeTagId === 'string' ? parsed.activeTagId : '',
+      activeTagId: fallbackTagId,
+      selectedTagIds: normalizedSelectedTagIds,
+      tagFilterMode: normalizedFilterMode,
       search: typeof parsed.search === 'string' ? parsed.search : '',
       activeMediaId: typeof parsed.activeMediaId === 'string' && parsed.activeMediaId ? parsed.activeMediaId : null,
       lightboxOpen: parsed.lightboxOpen === true,
@@ -546,7 +638,9 @@ function persistAppViewState() {
   const snapshot: PersistedAppViewState = {
     activeSection: activeSection.value,
     activeAlbumId: activeAlbumId.value,
-    activeTagId: activeTagId.value,
+    activeTagId: selectedTagFilterIds.value[0] || '',
+    selectedTagIds: [...selectedTagFilterIds.value],
+    tagFilterMode: tagFilterMode.value,
     search: search.value,
     activeMediaId: activeMediaId.value,
     lightboxOpen: lightboxOpen.value,
@@ -652,6 +746,8 @@ async function applyRouteFromLocation() {
   lightboxOpen.value = false
   activeSection.value = 'all'
   activeTagId.value = ''
+  selectedTagFilterIds.value = []
+  tagFilterMode.value = 'or'
   activeAlbumId.value = routeAlbumId.value || ''
 
   if (routeMediaId.value) {
@@ -671,12 +767,15 @@ async function applyRouteFromLocation() {
     if (persisted) {
       search.value = persisted.search
       activeSection.value = persisted.activeSection
+      selectedTagFilterIds.value = [...persisted.selectedTagIds]
+      tagFilterMode.value = persisted.tagFilterMode
       if (persisted.activeSection === 'all') {
         activeAlbumId.value = persisted.activeAlbumId
         activeTagId.value = ''
       } else if (persisted.activeSection === 'tags') {
-        activeAlbumId.value = ''
-        activeTagId.value = persisted.activeTagId
+        activeSection.value = 'all'
+        activeAlbumId.value = persisted.activeAlbumId
+        activeTagId.value = ''
       } else {
         activeAlbumId.value = ''
         activeTagId.value = ''
@@ -684,6 +783,8 @@ async function applyRouteFromLocation() {
       activeMediaId.value = persisted.activeMediaId
       lightboxOpen.value = persisted.lightboxOpen && Boolean(persisted.activeMediaId)
     } else {
+      selectedTagFilterIds.value = []
+      tagFilterMode.value = 'or'
       activeMediaId.value = null
     }
   }
@@ -1725,7 +1826,7 @@ async function loadAll(options: { clearGrid?: boolean } = {}) {
       !routeAlbumId.value &&
       activeSection.value === 'all' &&
       !activeAlbumId.value &&
-      !activeTagId.value
+      selectedTagFilterIds.value.length === 0
 
     if (firstMedia && canAutoSelectFirstMedia) {
       activeMediaId.value = firstMedia.id
@@ -1744,7 +1845,6 @@ async function loadAll(options: { clearGrid?: boolean } = {}) {
 
 function openAlbum(albumId: string, pushRoute = true) {
   activeSection.value = 'all'
-  activeTagId.value = ''
   activeAlbumId.value = albumId
   activeMediaId.value = null
   if (pushRoute && routeMode.value === 'app') {
@@ -1764,18 +1864,30 @@ function openAlbum(albumId: string, pushRoute = true) {
 
 function goRoot(pushRoute = true) {
   activeAlbumId.value = ''
-  activeTagId.value = ''
   activeMediaId.value = null
   if (pushRoute && routeMode.value === 'app') {
     pushPath('/')
   }
 }
 
+function toggleTagFilter(tagId: string) {
+  const current = new Set(selectedTagFilterIds.value)
+  if (current.has(tagId)) {
+    current.delete(tagId)
+  } else {
+    current.add(tagId)
+  }
+  selectedTagFilterIds.value = Array.from(current)
+  activeTagId.value = selectedTagFilterIds.value[0] || ''
+}
+
+function clearTagFilters() {
+  selectedTagFilterIds.value = []
+  activeTagId.value = ''
+}
+
 function openTag(tagId: string) {
-  activeSection.value = 'tags'
-  activeAlbumId.value = ''
-  activeTagId.value = tagId
-  activeMediaId.value = null
+  toggleTagFilter(tagId)
   closeContextMenus()
 }
 
@@ -1795,28 +1907,44 @@ function onBreadcrumbClick(crumb: GalleryBreadcrumb) {
 
   if (crumb.type === 'section' && crumb.section === 'favorites') {
     activeSection.value = 'favorites'
-    activeTagId.value = ''
     activeMediaId.value = null
-    return
-  }
-
-  if (crumb.type === 'section' && crumb.section === 'tags' && activeTagId.value) {
-    openTag(activeTagId.value)
   }
 }
 
+function applyTagSuggestionToInput(rawInput: string, tagName: string) {
+  const parts = rawInput.split(',')
+  parts.pop()
+  const base = Array.from(
+    new Set(
+      parts
+        .map((part) => part.trim())
+        .filter(Boolean),
+    ),
+  )
+  const alreadyAdded = base.some((part) => part.toLowerCase() === tagName.toLowerCase())
+  if (!alreadyAdded) {
+    base.push(tagName)
+  }
+  return `${base.join(', ')}, `
+}
+
 function applyTagSuggestion(tagName: string) {
-  const parts = editor.tagsInput.split(',')
-  const draftRaw = parts.pop() ?? ''
-  const prefixSpaces = draftRaw.match(/^\s*/)?.[0] ?? ''
-  const base = parts.map((part) => part.trim()).filter(Boolean)
-  const next = [...base, `${prefixSpaces}${tagName}`]
-  editor.tagsInput = `${next.join(', ')}, `
+  editor.tagsInput = applyTagSuggestionToInput(editor.tagsInput, tagName)
 
   suppressTagsCommitOnBlur.value = true
   setTimeout(() => {
     tagsInputRef.value?.focus()
     suppressTagsCommitOnBlur.value = false
+  }, 0)
+}
+
+function applyLightboxTagSuggestion(tagName: string) {
+  lightboxTagsInput.value = applyTagSuggestionToInput(lightboxTagsInput.value, tagName)
+
+  suppressLightboxTagsCommitOnBlur.value = true
+  setTimeout(() => {
+    lightboxTagsInputRef.value?.focus()
+    suppressLightboxTagsCommitOnBlur.value = false
   }, 0)
 }
 
@@ -2358,6 +2486,7 @@ function cancelLightboxTagsEdit() {
 
 async function commitLightboxTagsEdit() {
   if (!activeMedia.value || !token.value) return
+  if (suppressLightboxTagsCommitOnBlur.value) return
   if (saving.value) return
 
   const mediaId = activeMedia.value.id
@@ -3118,13 +3247,18 @@ watch([activeAlbumId, activeSection, search], ([nextAlbumId, nextSection], [prev
   if (!token.value) return
   if (activeSection.value === 'favorites') {
     activeAlbumId.value = ''
-    activeTagId.value = ''
   }
   if (activeSection.value === 'tags') {
-    activeAlbumId.value = ''
+    activeSection.value = 'all'
   }
   const isContextSwitch = nextAlbumId !== prevAlbumId || nextSection !== prevSection
   void loadAll({ clearGrid: isContextSwitch })
+})
+
+watch(tags, (items) => {
+  const allowed = new Set(items.map((tag) => tag.id))
+  selectedTagFilterIds.value = selectedTagFilterIds.value.filter((id) => allowed.has(id))
+  activeTagId.value = selectedTagFilterIds.value[0] || ''
 })
 
 watch(
@@ -3133,7 +3267,8 @@ watch(
     token.value,
     activeSection.value,
     activeAlbumId.value,
-    activeTagId.value,
+    selectedTagFilterIds.value.join(','),
+    tagFilterMode.value,
     search.value,
     activeMediaId.value,
     lightboxOpen.value,
@@ -3475,10 +3610,16 @@ onBeforeUnmount(() => {
             </button>
 
             <div class="mobile-menu-subtitle" v-if="sortedTags.length > 0">Tags</div>
+            <div v-if="sortedTags.length > 0" class="tag-filter-controls mobile-tag-filter-controls">
+              <button class="chip" :class="{ active: tagFilterMode === 'or' }" @click="tagFilterMode = 'or'">OR</button>
+              <button class="chip" :class="{ active: tagFilterMode === 'and' }" @click="tagFilterMode = 'and'">AND</button>
+              <button class="chip" :disabled="selectedTagFilterIds.length === 0" @click="clearTagFilters">Clear</button>
+            </div>
             <button
               v-for="tag in sortedTags"
               :key="`menu-tag-${tag.id}`"
               class="mobile-screen-item"
+              :class="{ active: selectedTagFilterSet.has(tag.id) }"
               @click="openTag(tag.id); closeMobileUserMenu()"
             >
               <i class="ri-price-tag-3-line" aria-hidden="true"></i>
@@ -3528,7 +3669,7 @@ onBeforeUnmount(() => {
             <button
               class="nav-item"
               :class="{ active: activeSection === 'favorites' }"
-              @click="activeSection = 'favorites'"
+              @click="activeSection = 'favorites'; activeMediaId = null"
             >
               ★ Favorites
             </button>
@@ -3604,11 +3745,16 @@ onBeforeUnmount(() => {
 
           <div class="side-group" v-if="sortedTags.length > 0">
             <div class="side-title">Tags</div>
+            <div class="tag-filter-controls">
+              <button class="chip" :class="{ active: tagFilterMode === 'or' }" @click="tagFilterMode = 'or'">OR</button>
+              <button class="chip" :class="{ active: tagFilterMode === 'and' }" @click="tagFilterMode = 'and'">AND</button>
+              <button class="chip" :disabled="selectedTagFilterIds.length === 0" @click="clearTagFilters">Clear</button>
+            </div>
             <div
               v-for="tag in sortedTags"
               :key="`tag-${tag.id}`"
               class="nav-item row album-row"
-              :class="{ active: activeSection === 'tags' && activeTagId === tag.id }"
+              :class="{ active: selectedTagFilterSet.has(tag.id) }"
             >
               <span class="row-main" @click="openTag(tag.id)"># {{ tag.name }}</span>
               <button class="menu-dots-btn" title="Rename tag" @click.stop="renameTagFromSidebar(tag)">✎</button>
@@ -3634,9 +3780,13 @@ onBeforeUnmount(() => {
                 </template>
               </nav>
               <div class="gallery-title">
-                {{ activeSection === 'favorites' ? 'Favorites' : (activeSection === 'tags' ? (activeTag ? `#${activeTag.name}` : 'Tag') : (activeAlbum ? activeAlbum.name : 'All photos')) }}
+                {{ galleryTitle }}
               </div>
               <div class="muted">{{ filteredMedia.length }} items · {{ selectedCount }} selected</div>
+              <div v-if="selectedFilterTags.length > 0" class="chips tag-filter-summary">
+                <span class="chip-lite" v-for="tag in selectedFilterTags" :key="`active-filter-tag-${tag.id}`"># {{ tag.name }}</span>
+                <span class="chip-lite tag-filter-mode-chip">{{ tagFilterMode === 'and' ? 'AND' : 'OR' }}</span>
+              </div>
             </div>
           </div>
 
@@ -3875,6 +4025,16 @@ onBeforeUnmount(() => {
               {{ editor.tagsInput || '—' }}
             </div>
             <div v-else class="tag-input-wrap">
+              <div v-if="detailsEditingTagChips.length > 0" class="chips tag-editing-chips">
+                <span
+                  v-for="chip in detailsEditingTagChips"
+                  :key="chip.key"
+                  class="chip-lite"
+                  :class="{ 'tag-chip-draft': chip.draft }"
+                >
+                  # {{ chip.label }}
+                </span>
+              </div>
               <input
                 ref="tagsInputRef"
                 v-model="editor.tagsInput"
@@ -4045,16 +4205,38 @@ onBeforeUnmount(() => {
                   <button class="btn ghost" @click.stop="beginLightboxTagsEdit">Edit tags</button>
                 </div>
                 <div v-else class="lightbox-tags-edit">
-                  <input
-                    ref="lightboxTagsInputRef"
-                    v-model="lightboxTagsInput"
-                    class="input"
-                    placeholder="tag1, tag2"
-                    @click.stop
-                    @blur="commitLightboxTagsEdit"
-                    @keydown.enter.prevent="commitLightboxTagsEdit"
-                    @keydown.esc.prevent="cancelLightboxTagsEdit"
-                  />
+                  <div class="tag-input-wrap">
+                    <div v-if="lightboxEditingTagChips.length > 0" class="chips tag-editing-chips">
+                      <span
+                        v-for="chip in lightboxEditingTagChips"
+                        :key="chip.key"
+                        class="chip-lite"
+                        :class="{ 'tag-chip-draft': chip.draft }"
+                      >
+                        # {{ chip.label }}
+                      </span>
+                    </div>
+                    <input
+                      ref="lightboxTagsInputRef"
+                      v-model="lightboxTagsInput"
+                      class="input"
+                      placeholder="tag1, tag2"
+                      @click.stop
+                      @blur="commitLightboxTagsEdit"
+                      @keydown.enter.prevent="commitLightboxTagsEdit"
+                      @keydown.esc.prevent="cancelLightboxTagsEdit"
+                    />
+                    <div v-if="lightboxTagSuggestions.length > 0" class="tag-suggestions" @pointerdown.prevent>
+                      <button
+                        v-for="tag in lightboxTagSuggestions"
+                        :key="`lightbox-tag-suggestion-${tag.id}`"
+                        class="tag-suggestion-item"
+                        @click="applyLightboxTagSuggestion(tag.name)"
+                      >
+                        # {{ tag.name }}
+                      </button>
+                    </div>
+                  </div>
                   <button class="btn ghost" :disabled="saving" @click.stop="cancelLightboxTagsEdit">Cancel</button>
                   <button class="btn" :disabled="saving" @click.stop="commitLightboxTagsEdit">Save</button>
                 </div>

@@ -186,6 +186,11 @@ body {
   background: var(--bg-4);
 }
 
+.mobile-screen-item.active {
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-3));
+}
+
 .mobile-screen-item:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -1169,6 +1174,33 @@ label {
 
 .tag-input-wrap {
   position: relative;
+}
+
+.tag-editing-chips {
+  margin-bottom: 6px;
+}
+
+.tag-chip-draft {
+  border-style: dashed;
+}
+
+.tag-filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.mobile-tag-filter-controls {
+  margin: 2px 0 6px;
+}
+
+.tag-filter-summary {
+  margin-top: 6px;
+}
+
+.tag-filter-mode-chip {
+  font-weight: 700;
 }
 
 .tag-suggestions {
