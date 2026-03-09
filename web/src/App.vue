@@ -1432,7 +1432,11 @@ async function loadThumb(mediaId: string) {
     thumbQueue.active += 1
 
     try {
-      const width = Math.max(320, Math.min(1280, Math.round((isMobileViewport.value ? 480 : 720) * (window.devicePixelRatio || 1))))
+      const targetBase = isMobileViewport.value ? 280 : 420
+      const width = Math.max(
+        180,
+        Math.min(960, Math.round(targetBase * Math.max(1, Math.min(2, window.devicePixelRatio || 1)))),
+      )
       const blob = await api.fetchThumbBlob(token.value as string, mediaId, width)
       thumbs.value[mediaId] = URL.createObjectURL(blob)
     } catch {
@@ -1504,7 +1508,7 @@ async function loadAll() {
       activeMediaId.value = firstMedia.id
     }
 
-    await Promise.all(mediaResult.slice(0, 32).map((item) => loadThumb(item.id)))
+    await Promise.all(mediaResult.slice(0, 16).map((item) => loadThumb(item.id)))
   } catch (error) {
     message.value = (error as Error).message
   } finally {

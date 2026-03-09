@@ -28,5 +28,17 @@ async function bootstrap() {
     credentials: corsCredentials,
   });
   await app.listen(process.env.PORT ?? 3000);
+
+  const server = app.getHttpServer() as {
+    requestTimeout?: number;
+    timeout?: number;
+    keepAliveTimeout?: number;
+  };
+
+  if (server) {
+    server.requestTimeout = 0;
+    server.timeout = 0;
+    server.keepAliveTimeout = 65_000;
+  }
 }
 bootstrap();

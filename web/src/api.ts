@@ -127,7 +127,7 @@ export const api = {
       const xhr = new XMLHttpRequest()
       xhr.open('POST', `${API_BASE}/media/upload`)
       xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-      xhr.timeout = 180000
+      xhr.timeout = 0
 
       xhr.upload.onprogress = (event) => {
         if (!onProgress || !event.lengthComputable) return
