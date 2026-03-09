@@ -3235,6 +3235,19 @@ onBeforeUnmount(() => {
               <div v-else class="photo-fallback">
                 {{ item.mimeType }}
               </div>
+              <div
+                v-if="item.mediaTags.length > 0"
+                class="photo-card-tags"
+                :class="{ 'has-fav': item.isFavorite }"
+              >
+                <span
+                  v-for="entry in item.mediaTags"
+                  :key="`card-tag-${item.id}-${entry.tag.id}`"
+                  class="chip-lite photo-card-tag"
+                >
+                  # {{ entry.tag.name }}
+                </span>
+              </div>
               <div class="fav-indicator" v-if="item.isFavorite">★</div>
             </article>
           </div>

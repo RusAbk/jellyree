@@ -889,6 +889,33 @@ body {
   font-size: 12px;
 }
 
+.photo-card-tags {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 28px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.photo-card-tags.has-fav {
+  left: 36px;
+}
+
+.photo-card-tag {
+  max-width: 100%;
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .marquee-box {
   position: fixed;
   border: 1px solid var(--accent);
