@@ -143,6 +143,7 @@ const uploadProgress = reactive({
   total: 0,
   percent: 0,
 })
+const gallerySkeletonAspectRatios = ref<number[]>([])
 const activeDetailsField = ref<'filename' | 'tags' | 'album' | 'metadataCreatedAt' | 'metadataModifiedAt' | 'location' | null>(null)
 const toast = reactive({
   visible: false,
@@ -1576,6 +1577,27 @@ function scheduleThumbVisibilityRefresh() {
   }, 0)
 }
 
+function buildGallerySkeletonAspectRatios(items: MediaItem[], count = 12) {
+  const aspectRatios = items
+    .map((item) => {
+      if (!item.width || !item.height || item.width <= 0 || item.height <= 0) return null
+      return item.width / item.height
+    })
+    .filter((ratio): ratio is number => ratio !== null)
+
+  const fallbackPattern = [1.39, 0.89, 1.19, 0.74, 1.05, 0.81, 1.28, 0.93, 1.14, 0.78, 1.08, 0.85]
+  const fallbackDefault = 1.39
+
+  const result: number[] = []
+  for (let index = 0; index < count; index += 1) {
+    const ratioFromMedia = aspectRatios.length > 0 ? aspectRatios[index % aspectRatios.length] : undefined
+    const ratioFromFallback = fallbackPattern[index % fallbackPattern.length] ?? fallbackDefault
+    result.push(ratioFromMedia ?? ratioFromFallback)
+  }
+
+  return result
+}
+
 function applyMediaToEditor(item: MediaItem | null) {
   if (!item) return
   editor.filename = splitFilenameParts(item.filename).baseName
@@ -1591,6 +1613,7 @@ async function loadAll(options: { clearGrid?: boolean } = {}) {
   if (!token.value) return
   const runId = ++loadAllRunId
   if (options.clearGrid) {
+    gallerySkeletonAspectRatios.value = buildGallerySkeletonAspectRatios(filteredMedia.value)
     media.value = []
     selectedMediaIds.value = []
   }
@@ -3536,9 +3559,10 @@ onBeforeUnmount(() => {
 
           <div v-if="showGalleryLoadingState" class="gallery-skeleton-masonry" aria-hidden="true">
             <article
-              v-for="index in 12"
+              v-for="(ratio, index) in (gallerySkeletonAspectRatios.length > 0 ? gallerySkeletonAspectRatios : [1.39, 0.89, 1.19, 0.74, 1.05, 0.81, 1.28, 0.93, 1.14, 0.78, 1.08, 0.85])"
               :key="`gallery-skeleton-${index}`"
               class="gallery-skeleton-card"
+              :style="{ aspectRatio: `${ratio}` }"
             >
               <div class="gallery-skeleton-shimmer" :style="{ animationDelay: `${(index % 6) * 0.08}s` }"></div>
             </article>

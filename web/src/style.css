@@ -648,13 +648,7 @@ body {
   background: var(--bg-3);
   overflow: hidden;
   position: relative;
-  min-height: 150px;
-}
-.gallery-skeleton-card:nth-child(3n) {
-  min-height: 220px;
-}
-.gallery-skeleton-card:nth-child(4n) {
-  min-height: 180px;
+  width: 100%;
 }
 .gallery-skeleton-shimmer {
   position: absolute;
