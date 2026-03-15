@@ -194,6 +194,7 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null
 let popStateHandler: (() => void) | null = null
 const thumbLoadsInFlight = new Map<string, Promise<void>>()
 const fullImageLoadsInFlight = new Map<string, Promise<void>>()
+const fullImageAbortControllers = new Map<string, AbortController>()
 let progressiveThumbLoadRunId = 0
 let thumbVisibilityObserver: IntersectionObserver | null = null
 let thumbObserverRefreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -1563,6 +1564,11 @@ function clearThumb(mediaId: string) {
 
 function clearLightboxFullImage(mediaId?: string) {
   if (mediaId) {
+    const controller = fullImageAbortControllers.get(mediaId)
+    if (controller) {
+      controller.abort()
+      fullImageAbortControllers.delete(mediaId)
+    }
     const cached = lightboxFullImages.value[mediaId]
     if (cached?.startsWith('blob:')) {
       URL.revokeObjectURL(cached)
@@ -1575,6 +1581,11 @@ function clearLightboxFullImage(mediaId?: string) {
   }
 
   for (const [id, url] of Object.entries(lightboxFullImages.value)) {
+    const controller = fullImageAbortControllers.get(id)
+    if (controller) {
+      controller.abort()
+      fullImageAbortControllers.delete(id)
+    }
     if (url.startsWith('blob:')) {
       URL.revokeObjectURL(url)
     }
@@ -1595,15 +1606,26 @@ async function loadActiveLightboxFullImage() {
     return
   }
 
+  // Keep network focused on the currently visible frame.
+  for (const [id, controller] of fullImageAbortControllers.entries()) {
+    if (id === mediaId) continue
+    controller.abort()
+    fullImageAbortControllers.delete(id)
+    fullImageLoadsInFlight.delete(id)
+  }
+
   const existingLoad = fullImageLoadsInFlight.get(mediaId)
   if (existingLoad) {
     await existingLoad
     return
   }
 
+  const controller = new AbortController()
+  fullImageAbortControllers.set(mediaId, controller)
+
   const task = (async () => {
     try {
-      const blob = await api.fetchFileBlob(token.value as string, mediaId)
+      const blob = await api.fetchFileBlob(token.value as string, mediaId, controller.signal)
       const objectUrl = URL.createObjectURL(blob)
 
       if (lightboxFullImages.value[mediaId]) {
@@ -1612,7 +1634,10 @@ async function loadActiveLightboxFullImage() {
       }
 
       lightboxFullImages.value[mediaId] = objectUrl
-    } catch {
+    } catch (error) {
+      if ((error as { name?: string })?.name === 'AbortError') {
+        return
+      }
       clearLightboxFullImage(mediaId)
     }
   })()
@@ -1621,6 +1646,7 @@ async function loadActiveLightboxFullImage() {
   try {
     await task
   } finally {
+    fullImageAbortControllers.delete(mediaId)
     fullImageLoadsInFlight.delete(mediaId)
   }
 }

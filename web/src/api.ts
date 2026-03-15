@@ -333,11 +333,12 @@ export const api = {
     `${API_BASE}/public/media/${token}/file${password ? `?password=${encodeURIComponent(password)}` : ''}`,
   publicAlbumMediaFileUrl: (token: string, mediaId: string, password?: string) =>
     `${API_BASE}/public/albums/${token}/media/${mediaId}/file${password ? `?password=${encodeURIComponent(password)}` : ''}`,
-  fetchFileBlob: async (token: string, mediaId: string) => {
+  fetchFileBlob: async (token: string, mediaId: string, signal?: AbortSignal) => {
     const response = await fetch(`${API_BASE}/media/${mediaId}/file`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
+      signal,
     })
 
     if (!response.ok) {
