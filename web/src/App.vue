@@ -58,7 +58,7 @@ const media = ref<MediaItem[]>([])
 const albums = ref<Album[]>([])
 const tags = ref<Tag[]>([])
 const thumbs = ref<Record<string, string>>({})
-const lightboxFullImage = ref<{ mediaId: string; url: string } | null>(null)
+const lightboxFullImages = ref<Record<string, string>>({})
 const activeMediaId = ref<string | null>(null)
 const activeSection = ref<'all' | 'favorites' | 'tags'>('all')
 const activeAlbumId = ref('')
@@ -193,6 +193,7 @@ const shareDialog = reactive({
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 let popStateHandler: (() => void) | null = null
 const thumbLoadsInFlight = new Map<string, Promise<void>>()
+const fullImageLoadsInFlight = new Map<string, Promise<void>>()
 let progressiveThumbLoadRunId = 0
 let thumbVisibilityObserver: IntersectionObserver | null = null
 let thumbObserverRefreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -287,8 +288,9 @@ const activeMedia = computed(() => media.value.find((item) => item.id === active
 const lightboxActiveImageSrc = computed(() => {
   const item = activeMedia.value
   if (!item) return ''
-  if (lightboxFullImage.value?.mediaId === item.id) {
-    return lightboxFullImage.value.url
+  const fullImageUrl = lightboxFullImages.value[item.id]
+  if (fullImageUrl) {
+    return fullImageUrl
   }
   return thumbs.value[item.id] || ''
 })
@@ -1547,10 +1549,7 @@ function canPreviewFromMeta(mediaId: string, mimeType: string, filename: string)
 }
 
 function onThumbError(mediaId: string) {
-  if (lightboxFullImage.value?.mediaId === mediaId) {
-    clearLightboxFullImage()
-    return
-  }
+  clearLightboxFullImage(mediaId)
   thumbs.value[mediaId] = ''
 }
 
@@ -1562,40 +1561,67 @@ function clearThumb(mediaId: string) {
   delete thumbs.value[mediaId]
 }
 
-function clearLightboxFullImage() {
-  const current = lightboxFullImage.value
-  if (current?.url?.startsWith('blob:')) {
-    URL.revokeObjectURL(current.url)
+function clearLightboxFullImage(mediaId?: string) {
+  if (mediaId) {
+    const cached = lightboxFullImages.value[mediaId]
+    if (cached?.startsWith('blob:')) {
+      URL.revokeObjectURL(cached)
+    }
+    if (cached) {
+      delete lightboxFullImages.value[mediaId]
+    }
+    fullImageLoadsInFlight.delete(mediaId)
+    return
   }
-  lightboxFullImage.value = null
+
+  for (const [id, url] of Object.entries(lightboxFullImages.value)) {
+    if (url.startsWith('blob:')) {
+      URL.revokeObjectURL(url)
+    }
+    fullImageLoadsInFlight.delete(id)
+  }
+  lightboxFullImages.value = {}
 }
 
 async function loadActiveLightboxFullImage() {
   if (!lightboxOpen.value || !activeMedia.value || !token.value) return
   const item = activeMedia.value
+  const mediaId = item.id
+
+  if (lightboxFullImages.value[mediaId]) return
 
   if (isHeicFile(item)) {
-    clearLightboxFullImage()
+    clearLightboxFullImage(mediaId)
     return
   }
 
-  const mediaId = item.id
+  const existingLoad = fullImageLoadsInFlight.get(mediaId)
+  if (existingLoad) {
+    await existingLoad
+    return
+  }
 
+  const task = (async () => {
+    try {
+      const blob = await api.fetchFileBlob(token.value as string, mediaId)
+      const objectUrl = URL.createObjectURL(blob)
+
+      if (lightboxFullImages.value[mediaId]) {
+        URL.revokeObjectURL(objectUrl)
+        return
+      }
+
+      lightboxFullImages.value[mediaId] = objectUrl
+    } catch {
+      clearLightboxFullImage(mediaId)
+    }
+  })()
+
+  fullImageLoadsInFlight.set(mediaId, task)
   try {
-    const blob = await api.fetchFileBlob(token.value, mediaId)
-    const objectUrl = URL.createObjectURL(blob)
-
-    if (!lightboxOpen.value || activeMediaId.value !== mediaId) {
-      URL.revokeObjectURL(objectUrl)
-      return
-    }
-
-    clearLightboxFullImage()
-    lightboxFullImage.value = { mediaId, url: objectUrl }
-  } catch {
-    if (lightboxFullImage.value?.mediaId === mediaId) {
-      clearLightboxFullImage()
-    }
+    await task
+  } finally {
+    fullImageLoadsInFlight.delete(mediaId)
   }
 }
 
