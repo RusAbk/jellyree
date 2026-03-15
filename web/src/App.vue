@@ -4378,17 +4378,33 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="lightbox-actions">
-                <button class="btn ghost" title="Edit photo" @click.stop="openEditMode(activeMedia.id)">Edit</button>
-                <button class="btn ghost" :title="activeMedia.isFavorite ? 'Remove favorite' : 'Add favorite'" @click.stop="toggleFavorite(activeMedia.id)">
-                  {{ activeMedia.isFavorite ? '★ Fav' : '☆ Fav' }}
+                <button class="btn ghost lightbox-action-btn" title="Edit photo" @click.stop="openEditMode(activeMedia.id)">
+                  <i class="ri-edit-line" aria-hidden="true"></i>
+                  <span class="lightbox-action-label">Edit</span>
                 </button>
-                <button class="btn ghost" title="Zoom out" :disabled="lightboxZoom <= 1" @click.stop="zoomOutLightbox">−</button>
+                <button class="btn ghost" :title="activeMedia.isFavorite ? 'Remove favorite' : 'Add favorite'" @click.stop="toggleFavorite(activeMedia.id)">
+                  <i :class="activeMedia.isFavorite ? 'ri-star-fill' : 'ri-star-line'" aria-hidden="true"></i>
+                  <span class="lightbox-action-label">Fav</span>
+                </button>
+                <button class="btn ghost lightbox-action-btn" title="Zoom out" :disabled="lightboxZoom <= 1" @click.stop="zoomOutLightbox">
+                  <i class="ri-zoom-out-line" aria-hidden="true"></i>
+                  <span class="lightbox-action-label">Out</span>
+                </button>
                 <button class="btn ghost lightbox-zoom-readout" :disabled="lightboxZoom === 1" @click.stop="resetLightboxZoom">
                   {{ lightboxZoomPercent }}%
                 </button>
-                <button class="btn ghost" title="Zoom in" :disabled="lightboxZoom >= 4" @click.stop="zoomInLightbox">+</button>
-                <button class="btn ghost danger" title="Delete photo" @click.stop="deleteMedia(activeMedia.id)">Delete</button>
-                <button class="btn ghost" @click.stop="closeLightbox">Close</button>
+                <button class="btn ghost lightbox-action-btn" title="Zoom in" :disabled="lightboxZoom >= 4" @click.stop="zoomInLightbox">
+                  <i class="ri-zoom-in-line" aria-hidden="true"></i>
+                  <span class="lightbox-action-label">In</span>
+                </button>
+                <button class="btn ghost danger lightbox-action-btn" title="Delete photo" @click.stop="deleteMedia(activeMedia.id)">
+                  <i class="ri-delete-bin-line" aria-hidden="true"></i>
+                  <span class="lightbox-action-label">Delete</span>
+                </button>
+                <button class="btn ghost lightbox-action-btn" @click.stop="closeLightbox">
+                  <i class="ri-close-line" aria-hidden="true"></i>
+                  <span class="lightbox-action-label">Close</span>
+                </button>
               </div>
             </div>
 
