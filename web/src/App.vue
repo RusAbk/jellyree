@@ -4378,16 +4378,16 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="lightbox-actions">
-                <button class="btn ghost" @click.stop="openEditMode(activeMedia.id)">Edit</button>
-                <button class="btn ghost" @click.stop="toggleFavorite(activeMedia.id)">
-                  {{ activeMedia.isFavorite ? '★ Favorited' : '☆ Favorite' }}
+                <button class="btn ghost" title="Edit photo" @click.stop="openEditMode(activeMedia.id)">Edit</button>
+                <button class="btn ghost" :title="activeMedia.isFavorite ? 'Remove favorite' : 'Add favorite'" @click.stop="toggleFavorite(activeMedia.id)">
+                  {{ activeMedia.isFavorite ? '★ Fav' : '☆ Fav' }}
                 </button>
-                <button class="btn ghost" :disabled="lightboxZoom <= 1" @click.stop="zoomOutLightbox">−</button>
+                <button class="btn ghost" title="Zoom out" :disabled="lightboxZoom <= 1" @click.stop="zoomOutLightbox">−</button>
                 <button class="btn ghost lightbox-zoom-readout" :disabled="lightboxZoom === 1" @click.stop="resetLightboxZoom">
                   {{ lightboxZoomPercent }}%
                 </button>
-                <button class="btn ghost" :disabled="lightboxZoom >= 4" @click.stop="zoomInLightbox">+</button>
-                <button class="btn ghost danger" @click.stop="deleteMedia(activeMedia.id)">Delete</button>
+                <button class="btn ghost" title="Zoom in" :disabled="lightboxZoom >= 4" @click.stop="zoomInLightbox">+</button>
+                <button class="btn ghost danger" title="Delete photo" @click.stop="deleteMedia(activeMedia.id)">Delete</button>
                 <button class="btn ghost" @click.stop="closeLightbox">Close</button>
               </div>
             </div>

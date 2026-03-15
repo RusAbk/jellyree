@@ -1401,6 +1401,9 @@ label {
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   border: 1px solid var(--border);
   background: var(--bg-2);
   border-radius: 12px;
@@ -1517,10 +1520,15 @@ label {
   display: flex;
   justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
   max-width: 100%;
   flex: 0 1 auto;
+}
+
+.lightbox-actions .btn {
+  padding: 6px 10px;
+  max-width: 100%;
 }
 
 .lightbox-zoom-readout {
@@ -2225,6 +2233,18 @@ label {
   .lightbox-thumb {
     flex-basis: 66px;
     height: 50px;
+  }
+}
+
+@media (max-width: 1320px) {
+  .lightbox-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .lightbox-actions {
+    justify-content: flex-start;
   }
 }
 
