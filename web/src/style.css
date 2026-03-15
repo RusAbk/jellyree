@@ -1427,6 +1427,8 @@ label {
   background-repeat: no-repeat;
   background-size: contain;
   border-radius: 8px;
+  transition: transform 0.14s ease;
+  will-change: transform;
 }
 
 .lightbox-fallback {
@@ -1510,6 +1512,11 @@ label {
   min-width: 0;
   max-width: 100%;
   flex: 0 1 auto;
+}
+
+.lightbox-zoom-readout {
+  min-width: 74px;
+  text-align: center;
 }
 
 .lightbox-tag-editor {

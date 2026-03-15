@@ -118,6 +118,7 @@ const suppressTagsCommitOnBlur = ref(false)
 const suppressLightboxTagsCommitOnBlur = ref(false)
 const lightboxTagsEditing = ref(false)
 const lightboxTagsInput = ref('')
+const lightboxZoom = ref(1)
 
 const touchGesture = reactive({
   timer: null as ReturnType<typeof setTimeout> | null,
@@ -532,6 +533,7 @@ const lightboxIndex = computed(() => {
   if (!activeMediaId.value) return -1
   return lightboxItems.value.findIndex((item) => item.id === activeMediaId.value)
 })
+const lightboxZoomPercent = computed(() => Math.round(lightboxZoom.value * 100))
 
 const activeMediaAlbums = computed(() => {
   if (!activeMedia.value) return []
@@ -2076,6 +2078,7 @@ async function scrollActiveMediaCardIntoView() {
 
 function closeLightbox() {
   lightboxOpen.value = false
+  resetLightboxZoom()
   clearLightboxFullImage()
   lightboxTagsEditing.value = false
   if (activeMediaId.value) {
@@ -2096,6 +2099,33 @@ function scrollActiveLightboxThumbIntoView() {
 function resetLightboxSwipe() {
   lightboxSwipe.active = false
   lightboxSwipe.horizontalIntent = false
+}
+
+function clampLightboxZoom(value: number) {
+  return Math.max(1, Math.min(4, value))
+}
+
+function setLightboxZoom(next: number) {
+  lightboxZoom.value = clampLightboxZoom(next)
+}
+
+function resetLightboxZoom() {
+  lightboxZoom.value = 1
+}
+
+function zoomInLightbox() {
+  setLightboxZoom(lightboxZoom.value + 0.25)
+}
+
+function zoomOutLightbox() {
+  setLightboxZoom(lightboxZoom.value - 0.25)
+}
+
+function onLightboxWheel(event: WheelEvent) {
+  if (!lightboxOpen.value) return
+  if (event.ctrlKey) return
+  const delta = event.deltaY < 0 ? 0.12 : -0.12
+  setLightboxZoom(lightboxZoom.value + delta)
 }
 
 function onLightboxTouchStart(event: TouchEvent) {
@@ -2123,6 +2153,7 @@ function onLightboxTouchStart(event: TouchEvent) {
 
 function onLightboxTouchMove(event: TouchEvent) {
   if (!lightboxSwipe.active || event.touches.length !== 1) return
+  if (lightboxZoom.value > 1) return
   const touch = event.touches[0]
   if (!touch) return
 
@@ -2142,6 +2173,10 @@ function onLightboxTouchMove(event: TouchEvent) {
 
 function onLightboxTouchEnd() {
   if (!lightboxSwipe.active) return
+  if (lightboxZoom.value > 1) {
+    resetLightboxSwipe()
+    return
+  }
 
   const dx = lightboxSwipe.lastX - lightboxSwipe.startX
   const dy = lightboxSwipe.lastY - lightboxSwipe.startY
@@ -3073,6 +3108,8 @@ function mediaFilterStyle(_item?: MediaItem) {
 function lightboxContainStyle(src: string, item: MediaItem) {
   return {
     backgroundImage: `url("${src}")`,
+    transform: `scale(${lightboxZoom.value})`,
+    transformOrigin: 'center center',
     ...mediaFilterStyle(item),
   }
 }
@@ -3253,6 +3290,9 @@ function onKeyDown(event: KeyboardEvent) {
   if (event.key === 'Escape') closeLightbox()
   if (event.key === 'ArrowRight') nextLightbox()
   if (event.key === 'ArrowLeft') prevLightbox()
+  if (event.key === '+' || event.key === '=') zoomInLightbox()
+  if (event.key === '-') zoomOutLightbox()
+  if (event.key === '0') resetLightboxZoom()
 }
 
 async function submitAuth() {
@@ -3378,9 +3418,11 @@ watch(
   () => [lightboxOpen.value, activeMediaId.value, token.value],
   ([isOpen, mediaId]) => {
     if (!isOpen || !mediaId) {
+      resetLightboxZoom()
       clearLightboxFullImage()
       return
     }
+    resetLightboxZoom()
     void loadActiveLightboxFullImage()
   },
 )
@@ -4224,12 +4266,17 @@ onBeforeUnmount(() => {
                 <button class="btn ghost" @click.stop="toggleFavorite(activeMedia.id)">
                   {{ activeMedia.isFavorite ? '★ Favorited' : '☆ Favorite' }}
                 </button>
+                <button class="btn ghost" :disabled="lightboxZoom <= 1" @click.stop="zoomOutLightbox">−</button>
+                <button class="btn ghost lightbox-zoom-readout" :disabled="lightboxZoom === 1" @click.stop="resetLightboxZoom">
+                  {{ lightboxZoomPercent }}%
+                </button>
+                <button class="btn ghost" :disabled="lightboxZoom >= 4" @click.stop="zoomInLightbox">+</button>
                 <button class="btn ghost danger" @click.stop="deleteMedia(activeMedia.id)">Delete</button>
                 <button class="btn ghost" @click.stop="closeLightbox">Close</button>
               </div>
             </div>
 
-            <div class="lightbox-media-stage">
+            <div class="lightbox-media-stage" @wheel.prevent="onLightboxWheel">
               <div
                 v-if="lightboxActiveImageSrc && canPreviewInBrowser(activeMedia)"
                 class="lightbox-image-contain"
