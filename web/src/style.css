@@ -1420,6 +1420,15 @@ label {
   padding: 8px;
 }
 
+.lightbox-media-stage.zoomed {
+  cursor: grab;
+  touch-action: none;
+}
+
+.lightbox-media-stage.dragging {
+  cursor: grabbing;
+}
+
 .lightbox-image-contain {
   width: 100%;
   height: 100%;

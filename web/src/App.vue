@@ -85,6 +85,7 @@ const albumShareEnabled = ref<Record<string, boolean>>({})
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const lightboxStripRef = ref<HTMLDivElement | null>(null)
+const lightboxMediaStageRef = ref<HTMLDivElement | null>(null)
 const lightboxOpen = ref(false)
 const editModeOpen = ref(false)
 const createAlbumName = ref('')
@@ -138,6 +139,17 @@ const lightboxSwipe = reactive({
   lastY: 0,
   startedAt: 0,
   horizontalIntent: false,
+})
+
+const lightboxPan = reactive({
+  x: 0,
+  y: 0,
+  dragging: false,
+  pointerId: -1,
+  startX: 0,
+  startY: 0,
+  originX: 0,
+  originY: 0,
 })
 
 const albumContextMenu = reactive({
@@ -2101,16 +2113,73 @@ function resetLightboxSwipe() {
   lightboxSwipe.horizontalIntent = false
 }
 
+function getLightboxPanBounds() {
+  const stage = lightboxMediaStageRef.value
+  const item = activeMedia.value
+  if (!stage || !item || lightboxZoom.value <= 1) {
+    return { maxX: 0, maxY: 0 }
+  }
+
+  const stageWidth = Math.max(1, stage.clientWidth)
+  const stageHeight = Math.max(1, stage.clientHeight)
+
+  let displayWidth = stageWidth
+  let displayHeight = stageHeight
+
+  if (item.width && item.height && item.width > 0 && item.height > 0) {
+    const imageRatio = item.width / item.height
+    const stageRatio = stageWidth / stageHeight
+    if (imageRatio > stageRatio) {
+      displayWidth = stageWidth
+      displayHeight = stageWidth / imageRatio
+    } else {
+      displayHeight = stageHeight
+      displayWidth = stageHeight * imageRatio
+    }
+  }
+
+  const maxX = Math.max(0, (displayWidth * lightboxZoom.value - displayWidth) / 2)
+  const maxY = Math.max(0, (displayHeight * lightboxZoom.value - displayHeight) / 2)
+  return { maxX, maxY }
+}
+
+function clampLightboxPan(x: number, y: number) {
+  const bounds = getLightboxPanBounds()
+  return {
+    x: Math.max(-bounds.maxX, Math.min(bounds.maxX, x)),
+    y: Math.max(-bounds.maxY, Math.min(bounds.maxY, y)),
+  }
+}
+
+function setLightboxPan(x: number, y: number) {
+  const clamped = clampLightboxPan(x, y)
+  lightboxPan.x = clamped.x
+  lightboxPan.y = clamped.y
+}
+
+function resetLightboxPan() {
+  lightboxPan.x = 0
+  lightboxPan.y = 0
+  lightboxPan.dragging = false
+  lightboxPan.pointerId = -1
+}
+
 function clampLightboxZoom(value: number) {
   return Math.max(1, Math.min(4, value))
 }
 
 function setLightboxZoom(next: number) {
   lightboxZoom.value = clampLightboxZoom(next)
+  if (lightboxZoom.value <= 1) {
+    resetLightboxPan()
+    return
+  }
+  setLightboxPan(lightboxPan.x, lightboxPan.y)
 }
 
 function resetLightboxZoom() {
   lightboxZoom.value = 1
+  resetLightboxPan()
 }
 
 function zoomInLightbox() {
@@ -2128,8 +2197,55 @@ function onLightboxWheel(event: WheelEvent) {
   setLightboxZoom(lightboxZoom.value + delta)
 }
 
+function onLightboxMediaPointerDown(event: PointerEvent) {
+  if (lightboxZoom.value <= 1) return
+  const target = event.currentTarget as HTMLElement | null
+  if (!target) return
+
+  lightboxPan.dragging = true
+  lightboxPan.pointerId = event.pointerId
+  lightboxPan.startX = event.clientX
+  lightboxPan.startY = event.clientY
+  lightboxPan.originX = lightboxPan.x
+  lightboxPan.originY = lightboxPan.y
+
+  if (typeof target.setPointerCapture === 'function') {
+    try {
+      target.setPointerCapture(event.pointerId)
+    } catch {
+      // ignore when pointer capture is unavailable
+    }
+  }
+}
+
+function onLightboxMediaPointerMove(event: PointerEvent) {
+  if (!lightboxPan.dragging || lightboxPan.pointerId !== event.pointerId) return
+  const dx = event.clientX - lightboxPan.startX
+  const dy = event.clientY - lightboxPan.startY
+  setLightboxPan(lightboxPan.originX + dx, lightboxPan.originY + dy)
+}
+
+function onLightboxMediaPointerUp(event: PointerEvent) {
+  if (!lightboxPan.dragging || lightboxPan.pointerId !== event.pointerId) return
+  const target = event.currentTarget as HTMLElement | null
+  if (target && typeof target.releasePointerCapture === 'function') {
+    try {
+      target.releasePointerCapture(event.pointerId)
+    } catch {
+      // ignore when pointer release is unavailable
+    }
+  }
+  lightboxPan.dragging = false
+  lightboxPan.pointerId = -1
+}
+
 function onLightboxTouchStart(event: TouchEvent) {
   if (event.touches.length !== 1) {
+    resetLightboxSwipe()
+    return
+  }
+
+  if (lightboxZoom.value > 1) {
     resetLightboxSwipe()
     return
   }
@@ -3108,7 +3224,7 @@ function mediaFilterStyle(_item?: MediaItem) {
 function lightboxContainStyle(src: string, item: MediaItem) {
   return {
     backgroundImage: `url("${src}")`,
-    transform: `scale(${lightboxZoom.value})`,
+    transform: `translate(${lightboxPan.x}px, ${lightboxPan.y}px) scale(${lightboxZoom.value})`,
     transformOrigin: 'center center',
     ...mediaFilterStyle(item),
   }
@@ -4276,7 +4392,17 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="lightbox-media-stage" @wheel.prevent="onLightboxWheel">
+            <div
+              ref="lightboxMediaStageRef"
+              class="lightbox-media-stage"
+              :class="{ zoomed: lightboxZoom > 1, dragging: lightboxPan.dragging }"
+              @wheel.prevent="onLightboxWheel"
+              @pointerdown="onLightboxMediaPointerDown"
+              @pointermove="onLightboxMediaPointerMove"
+              @pointerup="onLightboxMediaPointerUp"
+              @pointercancel="onLightboxMediaPointerUp"
+              @pointerleave="onLightboxMediaPointerUp"
+            >
               <div
                 v-if="lightboxActiveImageSrc && canPreviewInBrowser(activeMedia)"
                 class="lightbox-image-contain"
