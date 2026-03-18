@@ -300,6 +300,16 @@ export class MediaController {
     return `attachment; filename="${normalized}"; filename*=UTF-8''${encoded}`;
   }
 
+  private buildJpegFilename(filename: string) {
+    const trimmed = filename.trim();
+    const dotIndex = trimmed.lastIndexOf('.');
+    if (dotIndex <= 0) {
+      return `${trimmed || 'photo'}.jpg`;
+    }
+    const stem = trimmed.slice(0, dotIndex);
+    return `${stem}.jpg`;
+  }
+
   private async readUploadMetadata(fileName: string, mimeType: string): Promise<UploadMetadata> {
     const defaults: UploadMetadata = {
       width: null,
@@ -1253,6 +1263,104 @@ export class MediaController {
       return copied;
     } catch (error) {
       await this.deleteObjectFromR2(req.user!.id, copyStoragePath).catch(() => {
+        return;
+      });
+      throw error;
+    }
+  }
+
+  @Post(':id/convert-jpg')
+  async convertToJpg(@Req() req: RequestWithUser, @Param('id') id: string) {
+    const source = await this.prisma.media.findFirst({
+      where: { id, ownerId: req.user!.id },
+      include: {
+        mediaTags: true,
+        albumMedia: true,
+      },
+    });
+
+    if (!source) {
+      return { error: 'Not found' };
+    }
+
+    if (!source.mimeType.toLowerCase().startsWith('image/')) {
+      throw new BadRequestException('Only image files can be converted to JPG');
+    }
+
+    const sourceBody = await this.getObjectBufferFromR2(req.user!.id, source.filePath);
+    const convertedBuffer = await sharp(sourceBody, { failOn: 'none' })
+      .rotate()
+      .jpeg({
+        quality: 100,
+        chromaSubsampling: '4:4:4',
+        mozjpeg: true,
+        progressive: true,
+      })
+      .toBuffer();
+
+    const convertedMeta = await sharp(convertedBuffer, { failOn: 'none' }).metadata();
+    const convertedStoragePath = `${randomUUID()}.jpg`;
+    const convertedFilename = this.buildJpegFilename(source.filename);
+
+    await this.uploadBufferToR2(req.user!.id, convertedStoragePath, 'image/jpeg', convertedBuffer);
+
+    try {
+      const created = await this.prisma.$transaction(async (tx) => {
+        const inserted = await tx.media.create({
+          data: {
+            ownerId: source.ownerId,
+            filePath: convertedStoragePath,
+            filename: convertedFilename,
+            relativePath: source.relativePath,
+            isFavorite: source.isFavorite,
+            mimeType: 'image/jpeg',
+            sizeBytes: convertedBuffer.byteLength,
+            width: convertedMeta.width || source.width,
+            height: convertedMeta.height || source.height,
+            adjustments: Prisma.JsonNull,
+            capturedAt: source.capturedAt,
+            metadataCreatedAt: source.metadataCreatedAt,
+            metadataModifiedAt: source.metadataModifiedAt,
+            latitude: source.latitude,
+            longitude: source.longitude,
+          },
+          include: {
+            mediaTags: { include: { tag: true } },
+            albumMedia: true,
+          },
+        });
+
+        const sourceAlbumId = source.albumMedia[0]?.albumId;
+        if (sourceAlbumId) {
+          await tx.albumMedia.create({
+            data: {
+              albumId: sourceAlbumId,
+              mediaId: inserted.id,
+            },
+          });
+        }
+
+        if (source.mediaTags.length > 0) {
+          await tx.mediaTag.createMany({
+            data: source.mediaTags.map((entry) => ({
+              mediaId: inserted.id,
+              tagId: entry.tagId,
+            })),
+          });
+        }
+
+        return tx.media.findUnique({
+          where: { id: inserted.id },
+          include: {
+            mediaTags: { include: { tag: true } },
+            albumMedia: true,
+          },
+        });
+      });
+
+      return created;
+    } catch (error) {
+      await this.deleteObjectFromR2(req.user!.id, convertedStoragePath).catch(() => {
         return;
       });
       throw error;

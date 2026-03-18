@@ -211,6 +211,14 @@ export const api = {
       },
       token,
     ),
+  convertMediaToJpg: (token: string, mediaId: string) =>
+    request<MediaItem>(
+      `/media/${mediaId}/convert-jpg`,
+      {
+        method: 'POST',
+      },
+      token,
+    ),
   bulkTag: (token: string, mediaIds: string[], tags: string[]) =>
     request(
       '/media/bulk/tag',

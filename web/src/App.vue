@@ -1507,6 +1507,13 @@ function contextCopyMedia() {
   void duplicateMedia(item.id)
 }
 
+function contextConvertMediaToJpg() {
+  const item = mediaFromContext()
+  closeContextMenus()
+  if (!item) return
+  void convertMediaToJpg(item.id)
+}
+
 async function downloadSelectedAsZip() {
   if (!token.value || selectedMediaIds.value.length === 0) return
 
@@ -3065,6 +3072,19 @@ async function duplicateMedia(mediaId: string) {
   }
 }
 
+async function convertMediaToJpg(mediaId: string) {
+  if (!token.value) return
+  try {
+    const converted = await api.convertMediaToJpg(authHeaders(), mediaId)
+    showToast('JPG copy created')
+    await loadAll()
+    activeMediaId.value = converted.id
+    selectedMediaIds.value = [converted.id]
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
 async function configureMediaShare(mediaId: string) {
   if (!token.value) return
   try {
@@ -4460,6 +4480,7 @@ onBeforeUnmount(() => {
         <button @click="contextOpenMediaDetails">Details</button>
         <button @click="contextEditMedia">Edit photo</button>
         <button @click="contextCopyMedia">Create copy</button>
+        <button v-if="mediaFromContext()?.mimeType?.startsWith('image/')" @click="contextConvertMediaToJpg">Convert to JPG</button>
         <button @click="contextShareMedia">Public access settings…</button>
         <button v-if="mediaContextMenu.mediaId && isMediaShareEnabled(mediaContextMenu.mediaId)" @click="contextCopyMediaShareLink">Copy public link</button>
         <button @click="contextDownloadMedia">Download</button>
