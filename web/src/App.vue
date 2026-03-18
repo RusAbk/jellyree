@@ -3327,9 +3327,20 @@ function mediaFilterStyleFromEditor() {
   const finalBrightness = brightness + liftedBrightness + reducedHighlights
   const finalSaturation = saturation + warmTint * 6 - coolTint * 4
   const finalSepia = Math.max(0, sepia + warmTint * 10)
+
+  const normalizedRotate = ((Math.round(rotate / 90) * 90) % 360 + 360) % 360
+  const isQuarterTurn = normalizedRotate === 90 || normalizedRotate === 270
+  let frameFitScale = 1
+
+  if (isQuarterTurn && activeMedia.value?.width && activeMedia.value?.height) {
+    const width = Math.max(1, activeMedia.value.width)
+    const height = Math.max(1, activeMedia.value.height)
+    frameFitScale = Math.min(width / height, height / width)
+  }
+
   return {
     filter: `brightness(${finalBrightness}%) contrast(${finalContrast}%) saturate(${finalSaturation}%) grayscale(${grayscale}%) sepia(${finalSepia}%) hue-rotate(${temperature * 0.25}deg) blur(${glamourBlur}px)`,
-    transform: `scale(${zoom}) rotate(${rotate}deg) scaleX(${flipX}) scaleY(${flipY})`,
+    transform: `scale(${zoom * frameFitScale}) rotate(${rotate}deg) scaleX(${flipX}) scaleY(${flipY})`,
     clipPath: `inset(${editor.cropY}% ${100 - editor.cropX - editor.cropWidth}% ${100 - editor.cropY - editor.cropHeight}% ${editor.cropX}%)`,
   }
 }
@@ -3394,6 +3405,51 @@ function clampCropRect() {
   editor.cropHeight = Math.max(5, Math.min(100, editor.cropHeight))
   editor.cropX = Math.max(0, Math.min(100 - editor.cropWidth, editor.cropX))
   editor.cropY = Math.max(0, Math.min(100 - editor.cropHeight, editor.cropY))
+}
+
+function rotateCropRectClockwise() {
+  const prevX = editor.cropX
+  const prevY = editor.cropY
+  const prevWidth = editor.cropWidth
+  const prevHeight = editor.cropHeight
+
+  editor.cropX = 100 - (prevY + prevHeight)
+  editor.cropY = prevX
+  editor.cropWidth = prevHeight
+  editor.cropHeight = prevWidth
+  clampCropRect()
+}
+
+function rotateCropRectCounterClockwise() {
+  const prevX = editor.cropX
+  const prevY = editor.cropY
+  const prevWidth = editor.cropWidth
+  const prevHeight = editor.cropHeight
+
+  editor.cropX = prevY
+  editor.cropY = 100 - (prevX + prevWidth)
+  editor.cropWidth = prevHeight
+  editor.cropHeight = prevWidth
+  clampCropRect()
+}
+
+function syncCropRectWithRotation(previousAngle: number, nextAngle: number) {
+  const isQuarterTurn = (value: number) => Math.abs(value % 90) < 0.0001
+  if (!isQuarterTurn(previousAngle) || !isQuarterTurn(nextAngle)) return
+
+  const prevQuarter = Math.round(previousAngle / 90)
+  const nextQuarter = Math.round(nextAngle / 90)
+  if (prevQuarter === nextQuarter) return
+
+  const steps = nextQuarter - prevQuarter
+  const clockwise = steps > 0
+  for (let index = 0; index < Math.abs(steps); index += 1) {
+    if (clockwise) {
+      rotateCropRectClockwise()
+    } else {
+      rotateCropRectCounterClockwise()
+    }
+  }
 }
 
 function onCropPointerMove(event: PointerEvent) {
@@ -3571,6 +3627,13 @@ watch(activeMedia, (item) => {
     void loadThumb(item.id)
   }
 })
+
+watch(
+  () => editor.rotate,
+  (next, prev) => {
+    syncCropRectWithRotation(prev, next)
+  },
+)
 
 watch(filteredMedia, (items) => {
   const allowed = new Set(items.map((item) => item.id))
@@ -4707,7 +4770,7 @@ onBeforeUnmount(() => {
               <div class="slider-row"><span>Grayscale</span><input v-model="editor.grayscale" type="range" min="0" max="100" /></div>
               <div class="slider-row"><span>Sepia</span><input v-model="editor.sepia" type="range" min="0" max="100" /></div>
               <div class="slider-row"><span>Crop zoom</span><input v-model="editor.cropZoom" type="range" min="0" max="60" /></div>
-              <div class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" /></div>
+              <div class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" step="90" /></div>
               <div class="slider-row switches">
                 <span>Mirror</span>
                 <div class="switch-group">
@@ -4757,7 +4820,7 @@ onBeforeUnmount(() => {
             <div v-else-if="activeEditorMobileTab === 'grayscale'" class="slider-row"><span>Grayscale</span><input v-model="editor.grayscale" type="range" min="0" max="100" /></div>
             <div v-else-if="activeEditorMobileTab === 'sepia'" class="slider-row"><span>Sepia</span><input v-model="editor.sepia" type="range" min="0" max="100" /></div>
             <div v-else-if="activeEditorMobileTab === 'cropZoom'" class="slider-row"><span>Crop zoom</span><input v-model="editor.cropZoom" type="range" min="0" max="60" /></div>
-            <div v-else-if="activeEditorMobileTab === 'rotate'" class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" /></div>
+            <div v-else-if="activeEditorMobileTab === 'rotate'" class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" step="90" /></div>
             <div v-else class="slider-row switches">
               <span>Mirror</span>
               <div class="switch-group">
