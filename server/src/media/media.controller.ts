@@ -1290,11 +1290,13 @@ export class MediaController {
     const sourceBody = await this.getObjectBufferFromR2(req.user!.id, source.filePath);
     const convertedBuffer = await sharp(sourceBody, { failOn: 'none' })
       .rotate()
+      // Preserve source ICC profile to avoid color shifts (e.g. wide-gamut photos looking faded).
+      .keepIccProfile()
       .jpeg({
         quality: 100,
         chromaSubsampling: '4:4:4',
-        mozjpeg: true,
-        progressive: true,
+        mozjpeg: false,
+        progressive: false,
       })
       .toBuffer();
 
