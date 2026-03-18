@@ -16,6 +16,8 @@ type PersistedAppViewState = {
   activeTagId: string
   selectedTagIds: string[]
   tagFilterMode: 'and' | 'or'
+  mediaViewMode: 'gallery' | 'files'
+  mediaSortBy: 'date' | 'name'
   search: string
   activeMediaId: string | null
   lightboxOpen: boolean
@@ -65,6 +67,8 @@ const activeAlbumId = ref('')
 const activeTagId = ref('')
 const selectedTagFilterIds = ref<string[]>([])
 const tagFilterMode = ref<'and' | 'or'>('or')
+const mediaViewMode = ref<'gallery' | 'files'>('gallery')
+const mediaSortBy = ref<'date' | 'name'>('date')
 const search = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -537,7 +541,23 @@ const filteredMedia = computed(() => {
     return nameMatch || tagMatch
   })
 
-  return [...filtered].sort((a, b) => getMediaTimestamp(b) - getMediaTimestamp(a))
+  return [...filtered].sort((a, b) => {
+    if (mediaSortBy.value === 'name') {
+      const nameSort = a.filename.localeCompare(b.filename, undefined, {
+        sensitivity: 'base',
+        numeric: true,
+      })
+      if (nameSort !== 0) return nameSort
+      return getMediaTimestamp(b) - getMediaTimestamp(a)
+    }
+
+    const dateSort = getMediaTimestamp(b) - getMediaTimestamp(a)
+    if (dateSort !== 0) return dateSort
+    return a.filename.localeCompare(b.filename, undefined, {
+      sensitivity: 'base',
+      numeric: true,
+    })
+  })
 })
 
 const lightboxItems = computed(() => filteredMedia.value)
@@ -634,6 +654,8 @@ function readPersistedAppViewState(): PersistedAppViewState | null {
       ? selectedTagIds
       : (fallbackTagId ? [fallbackTagId] : [])
     const normalizedFilterMode = parsed.tagFilterMode === 'and' ? 'and' : 'or'
+    const normalizedViewMode = parsed.mediaViewMode === 'files' ? 'files' : 'gallery'
+    const normalizedSortBy = parsed.mediaSortBy === 'name' ? 'name' : 'date'
 
     return {
       activeSection: section,
@@ -641,6 +663,8 @@ function readPersistedAppViewState(): PersistedAppViewState | null {
       activeTagId: fallbackTagId,
       selectedTagIds: normalizedSelectedTagIds,
       tagFilterMode: normalizedFilterMode,
+      mediaViewMode: normalizedViewMode,
+      mediaSortBy: normalizedSortBy,
       search: typeof parsed.search === 'string' ? parsed.search : '',
       activeMediaId: typeof parsed.activeMediaId === 'string' && parsed.activeMediaId ? parsed.activeMediaId : null,
       lightboxOpen: parsed.lightboxOpen === true,
@@ -658,6 +682,8 @@ function persistAppViewState() {
     activeTagId: selectedTagFilterIds.value[0] || '',
     selectedTagIds: [...selectedTagFilterIds.value],
     tagFilterMode: tagFilterMode.value,
+    mediaViewMode: mediaViewMode.value,
+    mediaSortBy: mediaSortBy.value,
     search: search.value,
     activeMediaId: activeMediaId.value,
     lightboxOpen: lightboxOpen.value,
@@ -786,6 +812,8 @@ async function applyRouteFromLocation() {
       activeSection.value = persisted.activeSection
       selectedTagFilterIds.value = [...persisted.selectedTagIds]
       tagFilterMode.value = persisted.tagFilterMode
+      mediaViewMode.value = persisted.mediaViewMode
+      mediaSortBy.value = persisted.mediaSortBy
       if (persisted.activeSection === 'all') {
         activeAlbumId.value = persisted.activeAlbumId
         activeTagId.value = ''
@@ -900,6 +928,24 @@ function formatDateLabel(value: string | null) {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return '—'
   return parsed.toLocaleString()
+}
+
+function formatFileSize(sizeBytes: number) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = sizeBytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  const rounded = value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)
+  return `${rounded} ${units[unitIndex]}`
+}
+
+function formatFileExtension(filename: string) {
+  const extension = getFileExtension(filename)
+  return extension ? extension.toUpperCase() : 'FILE'
 }
 
 function toDateTimeLocalInput(value: string | null) {
@@ -3477,6 +3523,8 @@ watch(
     activeAlbumId.value,
     selectedTagFilterIds.value.join(','),
     tagFilterMode.value,
+    mediaViewMode.value,
+    mediaSortBy.value,
     search.value,
     activeMediaId.value,
     lightboxOpen.value,
@@ -3776,6 +3824,23 @@ onBeforeUnmount(() => {
               <i class="ri-book-2-line" aria-hidden="true"></i>
               <span>Library</span>
             </button>
+            <div class="mobile-menu-subtitle">View</div>
+            <div class="mobile-view-controls">
+              <label class="mobile-view-control">
+                <span>Mode</span>
+                <select v-model="mediaViewMode" class="input">
+                  <option value="gallery">Gallery</option>
+                  <option value="files">Files</option>
+                </select>
+              </label>
+              <label class="mobile-view-control">
+                <span>Sort by</span>
+                <select v-model="mediaSortBy" class="input">
+                  <option value="date">Date</option>
+                  <option value="name">Name</option>
+                </select>
+              </label>
+            </div>
             <button class="mobile-screen-item" @click="openMobileMenuScreen('bulk')">
               <i class="ri-stack-line" aria-hidden="true"></i>
               <span>Bulk actions</span>
@@ -4002,6 +4067,20 @@ onBeforeUnmount(() => {
 
           <div v-if="!isMobileViewport" class="gallery-toolbar shell">
             <div class="row-actions">
+              <label class="toolbar-select-wrap">
+                <span class="toolbar-select-label">View</span>
+                <select v-model="mediaViewMode" class="input toolbar-select">
+                  <option value="gallery">Gallery</option>
+                  <option value="files">Files</option>
+                </select>
+              </label>
+              <label class="toolbar-select-wrap">
+                <span class="toolbar-select-label">Sort by</span>
+                <select v-model="mediaSortBy" class="input toolbar-select">
+                  <option value="date">Date</option>
+                  <option value="name">Name</option>
+                </select>
+              </label>
               <select v-model="bulkTargetAlbumId" class="input bulk-select">
                 <option value="">Move selected to album…</option>
                 <option v-for="album in albums" :key="`bulk-${album.id}`" :value="album.id">
@@ -4047,19 +4126,28 @@ onBeforeUnmount(() => {
             </article>
           </div>
 
-          <div v-else ref="masonryRef" class="masonry">
+          <div v-else ref="masonryRef" :class="mediaViewMode === 'files' ? 'files-grid' : 'masonry'">
             <article
               v-for="album in visibleSubalbums"
               :key="`subalbum-${album.id}`"
               class="photo-card album-card"
-              :class="{ 'long-press-pending': isLongPressPending('album', album.id) }"
+              :class="{ 'file-tile-card': mediaViewMode === 'files', 'file-folder-card': mediaViewMode === 'files', 'long-press-pending': isLongPressPending('album', album.id) }"
               @click="onAlbumCardClick(album.id)"
               @touchstart="startTouchGesture('album', album.id, $event)"
               @touchmove.passive="moveTouchGesture($event)"
               @touchend="finishAlbumTouch(album.id)"
               @touchcancel="cancelTouchGesture"
             >
-              <div v-if="album.previewMedia.length > 0" class="album-preview-grid">
+              <template v-if="mediaViewMode === 'files'">
+                <div class="file-tile-preview file-folder-preview">
+                  <i class="ri-folder-3-line" aria-hidden="true"></i>
+                </div>
+                <div class="file-tile-meta">
+                  <div class="file-tile-name" :title="album.name">{{ album.name }}</div>
+                  <div class="file-tile-sub">Folder · {{ album.mediaCount }} item(s)</div>
+                </div>
+              </template>
+              <div v-else-if="album.previewMedia.length > 0" class="album-preview-grid">
                 <div
                   v-for="preview in album.previewMedia.slice(0, 4)"
                   :key="`album-preview-${album.id}-${preview.id}`"
@@ -4077,7 +4165,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div v-else class="album-empty-preview">📁</div>
-              <div class="album-card-meta">
+              <div v-if="mediaViewMode !== 'files'" class="album-card-meta">
                 <div class="album-card-name">📁 {{ album.name }}</div>
                 <div class="muted">{{ album.mediaCount }} item(s)</div>
               </div>
@@ -4088,7 +4176,7 @@ onBeforeUnmount(() => {
               :key="item.id"
               class="photo-card"
               :data-media-id="item.id"
-              :class="{ active: activeMediaId === item.id, selected: selectedMediaSet.has(item.id), 'long-press-pending': isLongPressPending('media', item.id), 'select-mode': isMobileViewport && mobileSelectMode }"
+              :class="{ active: activeMediaId === item.id, selected: selectedMediaSet.has(item.id), 'long-press-pending': isLongPressPending('media', item.id), 'select-mode': isMobileViewport && mobileSelectMode, 'file-tile-card': mediaViewMode === 'files' }"
               draggable="true"
               @dragstart="onMediaDragStart(item.id, $event)"
               @dragend="onMediaDragEnd"
@@ -4107,31 +4195,54 @@ onBeforeUnmount(() => {
                 ⋯
               </button>
 
-              <img
-                v-if="thumbs[item.id] && canPreviewInBrowser(item)"
-                class="photo-img"
-                :src="thumbs[item.id]"
-                :alt="item.filename"
-                :style="mediaFilterStyle(item)"
-                loading="lazy"
-                @error="onThumbError(item.id)"
-              />
-              <div v-else class="photo-fallback">
-                {{ item.mimeType }}
-              </div>
-              <div
-                v-if="item.mediaTags.length > 0"
-                class="photo-card-tags"
-                :class="{ 'has-fav': item.isFavorite }"
-              >
-                <span
-                  v-for="entry in item.mediaTags"
-                  :key="`card-tag-${item.id}-${entry.tag.id}`"
-                  class="chip-lite photo-card-tag"
+              <template v-if="mediaViewMode === 'files'">
+                <div class="file-tile-preview">
+                  <img
+                    v-if="thumbs[item.id] && canPreviewInBrowser(item)"
+                    class="photo-img"
+                    :src="thumbs[item.id]"
+                    :alt="item.filename"
+                    :style="mediaFilterStyle(item)"
+                    loading="lazy"
+                    @error="onThumbError(item.id)"
+                  />
+                  <div v-else class="photo-fallback">
+                    {{ formatFileExtension(item.filename) }}
+                  </div>
+                </div>
+                <div class="file-tile-meta">
+                  <div class="file-tile-name" :title="item.filename">{{ item.filename }}</div>
+                  <div class="file-tile-sub">{{ formatFileExtension(item.filename) }} · {{ formatFileSize(item.sizeBytes) }}</div>
+                  <div class="file-tile-sub">{{ formatDateLabel(item.metadataCreatedAt || item.capturedAt || item.createdAt) }}</div>
+                </div>
+              </template>
+              <template v-else>
+                <img
+                  v-if="thumbs[item.id] && canPreviewInBrowser(item)"
+                  class="photo-img"
+                  :src="thumbs[item.id]"
+                  :alt="item.filename"
+                  :style="mediaFilterStyle(item)"
+                  loading="lazy"
+                  @error="onThumbError(item.id)"
+                />
+                <div v-else class="photo-fallback">
+                  {{ item.mimeType }}
+                </div>
+                <div
+                  v-if="item.mediaTags.length > 0"
+                  class="photo-card-tags"
+                  :class="{ 'has-fav': item.isFavorite }"
                 >
-                  # {{ entry.tag.name }}
-                </span>
-              </div>
+                  <span
+                    v-for="entry in item.mediaTags"
+                    :key="`card-tag-${item.id}-${entry.tag.id}`"
+                    class="chip-lite photo-card-tag"
+                  >
+                    # {{ entry.tag.name }}
+                  </span>
+                </div>
+              </template>
               <div class="fav-indicator" v-if="item.isFavorite">★</div>
             </article>
           </div>
