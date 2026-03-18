@@ -3232,10 +3232,11 @@ async function applyImageEditsPermanently() {
       cropWidth: editor.cropWidth,
       cropHeight: editor.cropHeight,
     })
+    await loadAll()
     clearThumb(mediaId)
+    clearLightboxFullImage(mediaId)
     await loadThumb(mediaId)
     message.value = 'Edits permanently applied'
-    await loadAll()
     closeEditMode()
   } catch (error) {
     message.value = (error as Error).message
@@ -3251,10 +3252,11 @@ async function undoLastPermanentEdit() {
   try {
     const mediaId = activeMedia.value.id
     await api.revertMediaEdits(authHeaders(), mediaId)
+    await loadAll()
     clearThumb(mediaId)
+    clearLightboxFullImage(mediaId)
     await loadThumb(mediaId)
     message.value = 'Last permanent edit was undone'
-    await loadAll()
     closeEditMode()
   } catch (error) {
     message.value = (error as Error).message

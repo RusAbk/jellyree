@@ -156,7 +156,6 @@ const candidateA = resolve(__dirname, '..', '..', '..');
 const candidateB = resolve(__dirname, '..', '..', '..', '..');
 const serverRoot = existsSync(resolve(candidateA, 'prisma')) ? candidateA : candidateB;
 const tempUploadRoot = resolve(serverRoot, 'uploads');
-const MAX_MEDIA_REVISIONS = 10;
 ensureDir(tempUploadRoot);
 
 const r2AccountId = process.env.R2_ACCOUNT_ID || '';
@@ -378,21 +377,18 @@ export class MediaController {
     }
   }
 
-  private async pruneOldRevisions(mediaId: string, ownerId: string) {
-    const obsolete = await this.prisma.mediaRevision.findMany({
+  private async clearMediaRevisions(mediaId: string, ownerId: string) {
+    const revisions = await this.prisma.mediaRevision.findMany({
       where: { mediaId },
-      orderBy: { createdAt: 'desc' },
-      skip: MAX_MEDIA_REVISIONS,
+      select: { filePath: true },
     });
 
-    if (obsolete.length === 0) return;
+    if (revisions.length === 0) return;
 
-    await this.prisma.mediaRevision.deleteMany({
-      where: { id: { in: obsolete.map((entry) => entry.id) } },
-    });
+    await this.prisma.mediaRevision.deleteMany({ where: { mediaId } });
 
     await Promise.all(
-      obsolete.map((entry) =>
+      revisions.map((entry) =>
         this.deleteObjectFromR2(ownerId, entry.filePath).catch(() => {
           return;
         }),
@@ -1056,6 +1052,8 @@ export class MediaController {
       return { error: 'Not found' };
     }
 
+    await this.clearMediaRevisions(media.id, media.ownerId);
+
     let nextCapturedAt = media.capturedAt;
     if (body.capturedAt !== undefined) {
       if (!body.capturedAt) {
@@ -1302,21 +1300,9 @@ export class MediaController {
     const cropWidth = clamp(toNumber(adjustments.cropWidth, 100), 5, 100 - cropX);
     const cropHeight = clamp(toNumber(adjustments.cropHeight, 100), 5, 100 - cropY);
 
-    const revisionRelativePath = `revisions/${randomUUID()}${extname(media.filePath) || '.bin'}`;
+    await this.clearMediaRevisions(media.id, media.ownerId);
 
     const sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
-    await this.uploadBufferToR2(media.ownerId, revisionRelativePath, media.mimeType, sourceBuffer);
-
-    const revision = await this.prisma.mediaRevision.create({
-      data: {
-        mediaId: media.id,
-        filePath: revisionRelativePath,
-        sizeBytes: media.sizeBytes,
-        width: media.width,
-        height: media.height,
-      },
-    });
-
     try {
       const source = sharp(sourceBuffer, { failOn: 'none' });
       const metadata = await source.metadata();
@@ -1469,15 +1455,7 @@ export class MediaController {
           adjustments: Prisma.JsonNull,
         },
       });
-
-      await this.pruneOldRevisions(media.id, media.ownerId);
     } catch (error) {
-      await this.prisma.mediaRevision.delete({ where: { id: revision.id } }).catch(() => {
-        return;
-      });
-      await this.deleteObjectFromR2(media.ownerId, revisionRelativePath).catch(() => {
-        return;
-      });
       throw error;
     }
 
