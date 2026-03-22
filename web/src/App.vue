@@ -19,6 +19,7 @@ type PersistedAppViewState = {
   tagFilterMode: 'and' | 'or'
   mediaViewMode: 'gallery' | 'files'
   mediaSortBy: 'date' | 'name'
+  mediaDensity: 's' | 'm' | 'l'
   search: string
   activeMediaId: string | null
   lightboxOpen: boolean
@@ -70,6 +71,7 @@ const selectedTagFilterIds = ref<string[]>([])
 const tagFilterMode = ref<'and' | 'or'>('or')
 const mediaViewMode = ref<'gallery' | 'files'>('gallery')
 const mediaSortBy = ref<'date' | 'name'>('date')
+const mediaDensity = ref<'s' | 'm' | 'l'>('m')
 const search = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -633,6 +635,8 @@ const editorPreviewFrameStyle = computed(() => ({
   transformOrigin: 'top left',
 }))
 
+const mediaDensitySteps: Array<'s' | 'm' | 'l'> = ['s', 'm', 'l']
+
 function authHeaders() {
   return token.value
 }
@@ -657,6 +661,7 @@ function readPersistedAppViewState(): PersistedAppViewState | null {
     const normalizedFilterMode = parsed.tagFilterMode === 'and' ? 'and' : 'or'
     const normalizedViewMode = parsed.mediaViewMode === 'files' ? 'files' : 'gallery'
     const normalizedSortBy = parsed.mediaSortBy === 'name' ? 'name' : 'date'
+    const normalizedDensity = parsed.mediaDensity === 's' || parsed.mediaDensity === 'l' ? parsed.mediaDensity : 'm'
 
     return {
       activeSection: section,
@@ -666,6 +671,7 @@ function readPersistedAppViewState(): PersistedAppViewState | null {
       tagFilterMode: normalizedFilterMode,
       mediaViewMode: normalizedViewMode,
       mediaSortBy: normalizedSortBy,
+      mediaDensity: normalizedDensity,
       search: typeof parsed.search === 'string' ? parsed.search : '',
       activeMediaId: typeof parsed.activeMediaId === 'string' && parsed.activeMediaId ? parsed.activeMediaId : null,
       lightboxOpen: parsed.lightboxOpen === true,
@@ -685,6 +691,7 @@ function persistAppViewState() {
     tagFilterMode: tagFilterMode.value,
     mediaViewMode: mediaViewMode.value,
     mediaSortBy: mediaSortBy.value,
+    mediaDensity: mediaDensity.value,
     search: search.value,
     activeMediaId: activeMediaId.value,
     lightboxOpen: lightboxOpen.value,
@@ -815,6 +822,7 @@ async function applyRouteFromLocation() {
       tagFilterMode.value = persisted.tagFilterMode
       mediaViewMode.value = persisted.mediaViewMode
       mediaSortBy.value = persisted.mediaSortBy
+      mediaDensity.value = persisted.mediaDensity
       if (persisted.activeSection === 'all') {
         activeAlbumId.value = persisted.activeAlbumId
         activeTagId.value = ''
@@ -2653,6 +2661,31 @@ function clearSelection() {
   }
 }
 
+function setMediaDensity(nextDensity: 's' | 'm' | 'l') {
+  mediaDensity.value = nextDensity
+}
+
+function stepMediaDensity(direction: 1 | -1) {
+  const currentIndex = mediaDensitySteps.indexOf(mediaDensity.value)
+  const nextIndex = Math.max(0, Math.min(mediaDensitySteps.length - 1, currentIndex + direction))
+  const nextDensity = mediaDensitySteps[nextIndex]
+  if (!nextDensity || nextDensity === mediaDensity.value) return
+  mediaDensity.value = nextDensity
+}
+
+function onGalleryWheel(event: WheelEvent) {
+  if (routeMode.value !== 'app') return
+  if (!(event.ctrlKey || event.metaKey)) return
+
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  if (target.closest('input, textarea, select, button, .context-menu-floating')) return
+
+  event.preventDefault()
+  const direction: 1 | -1 = event.deltaY > 0 ? 1 : -1
+  stepMediaDensity(direction)
+}
+
 function startMarqueeSelect(event: PointerEvent) {
   if (event.pointerType === 'touch') return
   if (event.button !== 0) return
@@ -3622,6 +3655,7 @@ watch(
     tagFilterMode.value,
     mediaViewMode.value,
     mediaSortBy.value,
+    mediaDensity.value,
     search.value,
     activeMediaId.value,
     lightboxOpen.value,
@@ -4125,7 +4159,7 @@ onBeforeUnmount(() => {
           </div>
         </aside>
 
-        <main class="gallery-main" @pointerdown="startMarqueeSelect">
+        <main class="gallery-main" :class="`density-${mediaDensity}`" @pointerdown="startMarqueeSelect" @wheel="onGalleryWheel">
           <div class="gallery-head">
             <div>
               <nav class="gallery-breadcrumbs" aria-label="Gallery breadcrumbs">
@@ -4152,39 +4186,62 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="view-sort-icon-panel shell" aria-label="View and sort controls">
-              <button
-                class="chip icon-chip"
-                :class="{ active: mediaViewMode === 'gallery' }"
-                title="Gallery view"
-                @click="mediaViewMode = 'gallery'"
-              >
-                <i class="ri-layout-grid-line" aria-hidden="true"></i>
-              </button>
-              <button
-                class="chip icon-chip"
-                :class="{ active: mediaViewMode === 'files' }"
-                title="Files view"
-                @click="mediaViewMode = 'files'"
-              >
-                <i class="ri-file-list-3-line" aria-hidden="true"></i>
-              </button>
-              <button
-                class="chip icon-chip"
-                :class="{ active: mediaSortBy === 'date' }"
-                title="Sort by date"
-                @click="mediaSortBy = 'date'"
-              >
-                <i class="ri-calendar-line" aria-hidden="true"></i>
-              </button>
-              <button
-                class="chip icon-chip"
-                :class="{ active: mediaSortBy === 'name' }"
-                title="Sort by name"
-                @click="mediaSortBy = 'name'"
-              >
-                <i class="ri-sort-alphabet-asc" aria-hidden="true"></i>
-              </button>
+            <div class="gallery-mini-panel shell" aria-label="View controls and filters">
+              <div class="mini-group">
+                <span class="mini-label">View</span>
+                <button
+                  class="chip icon-chip"
+                  :class="{ active: mediaViewMode === 'gallery' }"
+                  title="Gallery view"
+                  @click="mediaViewMode = 'gallery'"
+                >
+                  <i class="ri-layout-grid-line" aria-hidden="true"></i>
+                </button>
+                <button
+                  class="chip icon-chip"
+                  :class="{ active: mediaViewMode === 'files' }"
+                  title="Files view"
+                  @click="mediaViewMode = 'files'"
+                >
+                  <i class="ri-file-list-3-line" aria-hidden="true"></i>
+                </button>
+              </div>
+
+              <div class="mini-group">
+                <span class="mini-label">Density</span>
+                <button class="chip" :class="{ active: mediaDensity === 's' }" title="Small" @click="setMediaDensity('s')">S</button>
+                <button class="chip" :class="{ active: mediaDensity === 'm' }" title="Medium" @click="setMediaDensity('m')">M</button>
+                <button class="chip" :class="{ active: mediaDensity === 'l' }" title="Large" @click="setMediaDensity('l')">L</button>
+              </div>
+
+              <div class="mini-group">
+                <span class="mini-label">Sort</span>
+                <button
+                  class="chip icon-chip"
+                  :class="{ active: mediaSortBy === 'date' }"
+                  title="Sort by date"
+                  @click="mediaSortBy = 'date'"
+                >
+                  <i class="ri-calendar-line" aria-hidden="true"></i>
+                </button>
+                <button
+                  class="chip icon-chip"
+                  :class="{ active: mediaSortBy === 'name' }"
+                  title="Sort by name"
+                  @click="mediaSortBy = 'name'"
+                >
+                  <i class="ri-sort-alphabet-asc" aria-hidden="true"></i>
+                </button>
+              </div>
+
+              <div class="mini-group">
+                <span class="mini-label">Filter</span>
+                <button class="chip" :class="{ active: tagFilterMode === 'or' }" @click="tagFilterMode = 'or'">OR</button>
+                <button class="chip" :class="{ active: tagFilterMode === 'and' }" @click="tagFilterMode = 'and'">AND</button>
+                <button class="chip" :disabled="selectedTagFilterIds.length === 0" @click="clearTagFilters">Clear</button>
+              </div>
+
+              <div class="mini-selected-count">{{ selectedCount }} selected</div>
             </div>
           </div>
 
@@ -4236,7 +4293,11 @@ onBeforeUnmount(() => {
             </article>
           </div>
 
-          <div v-else ref="masonryRef" :class="mediaViewMode === 'files' ? 'files-grid' : 'masonry'">
+          <div
+            v-else
+            ref="masonryRef"
+            :class="[mediaViewMode === 'files' ? 'files-grid' : 'masonry', `density-${mediaDensity}`]"
+          >
             <article
               v-for="album in visibleSubalbums"
               :key="`subalbum-${album.id}`"
