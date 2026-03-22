@@ -677,6 +677,7 @@ const virtualWindowState = reactive({
   scrollTop: 0,
   viewportHeight: 0,
 })
+const galleryViewportWidth = ref(0)
 
 const useMediaWindowing = computed(() => routeMode.value === 'app' && filteredMedia.value.length > 240)
 
@@ -725,7 +726,7 @@ const mediaVirtualWindow = computed(() => {
   }
 
   const main = galleryMainRef.value
-  const viewportWidth = main?.clientWidth || window.innerWidth
+  const viewportWidth = galleryViewportWidth.value || main?.clientWidth || window.innerWidth
   const columns = Math.max(1, getMasonryColumnCount(viewportWidth))
   const estimatedRowHeight = getEstimatedMediaRowHeight()
   const viewportHeight = Math.max(1, virtualWindowState.viewportHeight || main?.clientHeight || window.innerHeight)
@@ -749,6 +750,47 @@ const mediaVirtualWindow = computed(() => {
 const renderedMedia = computed(() => {
   const { start, end } = mediaVirtualWindow.value
   return filteredMedia.value.slice(start, end)
+})
+
+const galleryMasonryColumns = computed(() => {
+  if (mediaViewMode.value !== 'gallery') return [] as MediaItem[][]
+
+  const viewportWidth = Math.max(1, galleryViewportWidth.value || galleryMainRef.value?.clientWidth || window.innerWidth)
+  const columnsCount = Math.max(1, getMasonryColumnCount(viewportWidth))
+  const gap = viewportWidth <= 860 ? 8 : 12
+  const columnWidth = Math.max(120, (viewportWidth - gap * (columnsCount - 1)) / columnsCount)
+  const columns: Array<{ items: MediaItem[]; height: number }> = Array.from({ length: columnsCount }, () => ({
+    items: [],
+    height: 0,
+  }))
+
+  for (const item of renderedMedia.value) {
+    let shortestColumnIndex = 0
+    let shortestHeight = columns[0]?.height ?? 0
+
+    for (let index = 1; index < columns.length; index += 1) {
+      const column = columns[index]
+      if (column && column.height < shortestHeight) {
+        shortestHeight = column.height
+        shortestColumnIndex = index
+      }
+    }
+
+    const ratio =
+      typeof item.width === 'number' &&
+      typeof item.height === 'number' &&
+      item.width > 0 &&
+      item.height > 0
+        ? item.height / item.width
+        : 0.8
+    const estimatedHeight = Math.max(120, columnWidth * ratio) + 64
+    const targetColumn = columns[shortestColumnIndex]
+    if (!targetColumn) continue
+    targetColumn.items.push(item)
+    targetColumn.height += estimatedHeight
+  }
+
+  return columns.map((column) => column.items)
 })
 
 const mediaWindowTopPadding = computed(() => mediaVirtualWindow.value.topPadding)
@@ -2193,6 +2235,7 @@ function updateVirtualWindowState() {
   if (!main) return
   virtualWindowState.scrollTop = main.scrollTop
   virtualWindowState.viewportHeight = main.clientHeight
+  galleryViewportWidth.value = main.clientWidth
 }
 
 function scheduleVirtualWindowStateUpdate() {
@@ -2874,6 +2917,7 @@ function updateLayoutFlags() {
     mobileSelectMode.value = false
     closeMobileUserMenu()
   }
+  updateVirtualWindowState()
   scheduleThumbVisibilityRefresh()
 }
 
@@ -4942,23 +4986,23 @@ onBeforeUnmount(() => {
               aria-hidden="true"
             ></div>
 
-            <article
-              v-for="album in visibleSubalbums"
-              :key="`subalbum-${album.id}`"
-              class="photo-card album-card"
-              :class="{ 'file-tile-card': mediaViewMode === 'files', 'file-folder-card': mediaViewMode === 'files', 'long-press-pending': isLongPressPending('album', album.id) }"
-              @click="onAlbumCardClick(album.id)"
-              @contextmenu.prevent="openAlbumContextMenu($event, album.id)"
-              @touchstart="startTouchGesture('album', album.id, $event)"
-              @touchmove.passive="moveTouchGesture($event)"
-              @touchend="finishAlbumTouch(album.id)"
-              @touchcancel="cancelTouchGesture"
-            >
-              <button class="card-menu-btn menu-dots-btn" @click.stop="openAlbumContextMenu($event, album.id)">
-                ⋯
-              </button>
+            <template v-if="mediaViewMode === 'files'">
+              <article
+                v-for="album in visibleSubalbums"
+                :key="`subalbum-${album.id}`"
+                class="photo-card album-card"
+                :class="{ 'file-tile-card': mediaViewMode === 'files', 'file-folder-card': mediaViewMode === 'files', 'long-press-pending': isLongPressPending('album', album.id) }"
+                @click="onAlbumCardClick(album.id)"
+                @contextmenu.prevent="openAlbumContextMenu($event, album.id)"
+                @touchstart="startTouchGesture('album', album.id, $event)"
+                @touchmove.passive="moveTouchGesture($event)"
+                @touchend="finishAlbumTouch(album.id)"
+                @touchcancel="cancelTouchGesture"
+              >
+                <button class="card-menu-btn menu-dots-btn" @click.stop="openAlbumContextMenu($event, album.id)">
+                  ⋯
+                </button>
 
-              <template v-if="mediaViewMode === 'files'">
                 <div class="file-tile-preview file-folder-preview">
                   <i class="ri-folder-3-line" aria-hidden="true"></i>
                 </div>
@@ -4966,65 +5010,84 @@ onBeforeUnmount(() => {
                   <div class="file-tile-name" :title="album.name">{{ album.name }}</div>
                   <div class="file-tile-sub">Folder · {{ album.mediaCount }} item(s)</div>
                 </div>
-              </template>
-              <div v-else-if="album.previewMedia.length > 0" class="album-preview-grid">
-                <div
-                  v-for="preview in album.previewMedia.slice(0, 4)"
-                  :key="`album-preview-${album.id}-${preview.id}`"
-                  class="album-preview-cell"
-                >
-                  <img
-                    v-if="thumbs[preview.id] && canPreviewFromMeta(preview.id, preview.mimeType, preview.filename)"
-                    class="photo-img"
-                    :src="thumbs[preview.id]"
-                    :alt="preview.filename"
-                    loading="lazy"
-                    @error="onThumbError(preview.id)"
-                  />
-                  <div v-else class="photo-fallback">{{ preview.mimeType }}</div>
-                </div>
-              </div>
-              <div v-else class="album-empty-preview">📁</div>
-              <div v-if="mediaViewMode !== 'files'" class="album-card-meta">
-                <div class="album-card-name">📁 {{ album.name }}</div>
-                <div class="muted">{{ album.mediaCount }} item(s)</div>
-              </div>
-            </article>
+              </article>
+            </template>
 
-            <article
-              v-for="item in renderedMedia"
-              :key="item.id"
-              class="photo-card"
-              :data-media-id="item.id"
-              :class="{ active: activeMediaId === item.id, selected: selectedMediaSet.has(item.id), 'long-press-pending': isLongPressPending('media', item.id), 'select-mode': isMobileViewport && mobileSelectMode, 'file-tile-card': mediaViewMode === 'files' }"
-              draggable="true"
-              @dragstart="onMediaDragStart(item.id, $event)"
-              @dragend="onMediaDragEnd"
-              @click="onMediaCardClick(item.id, $event)"
-              @contextmenu.prevent="openMediaContextMenu($event, item.id)"
-              @dblclick="onMediaCardDoubleClick(item.id)"
-              @touchstart="startTouchGesture('media', item.id, $event)"
-              @touchmove.passive="moveTouchGesture($event)"
-              @touchend="finishMediaTouch(item.id)"
-              @touchcancel="cancelTouchGesture"
-            >
-              <div v-if="isMobileViewport && mobileSelectMode" class="card-select-indicator" :class="{ selected: selectedMediaSet.has(item.id) }">
-                <i v-if="selectedMediaSet.has(item.id)" class="ri-check-line" aria-hidden="true"></i>
-              </div>
-              <div v-if="mediaDateMarkers[item.id]" class="photo-date-block">{{ mediaDateMarkers[item.id] }}</div>
-              <button class="card-menu-btn menu-dots-btn" @click.stop="openMediaContextMenu($event, item.id)">
-                ⋯
-              </button>
-              <div
-                v-if="item.isFavorite || (item.revisionCount ?? 0) > 0 || isMediaShareEnabled(item.id)"
-                class="photo-status-badges"
+            <div v-else-if="visibleSubalbums.length > 0" class="gallery-subalbums-grid">
+              <article
+                v-for="album in visibleSubalbums"
+                :key="`subalbum-${album.id}`"
+                class="photo-card album-card"
+                :class="{ 'long-press-pending': isLongPressPending('album', album.id) }"
+                @click="onAlbumCardClick(album.id)"
+                @contextmenu.prevent="openAlbumContextMenu($event, album.id)"
+                @touchstart="startTouchGesture('album', album.id, $event)"
+                @touchmove.passive="moveTouchGesture($event)"
+                @touchend="finishAlbumTouch(album.id)"
+                @touchcancel="cancelTouchGesture"
               >
-                <span v-if="item.isFavorite" class="photo-status-chip is-favorite">favorite</span>
-                <span v-if="(item.revisionCount ?? 0) > 0" class="photo-status-chip is-edited">edited</span>
-                <span v-if="isMediaShareEnabled(item.id)" class="photo-status-chip is-shared">shared</span>
-              </div>
+                <button class="card-menu-btn menu-dots-btn" @click.stop="openAlbumContextMenu($event, album.id)">
+                  ⋯
+                </button>
 
-              <template v-if="mediaViewMode === 'files'">
+                <div v-if="album.previewMedia.length > 0" class="album-preview-grid">
+                  <div
+                    v-for="preview in album.previewMedia.slice(0, 4)"
+                    :key="`album-preview-${album.id}-${preview.id}`"
+                    class="album-preview-cell"
+                  >
+                    <img
+                      v-if="thumbs[preview.id] && canPreviewFromMeta(preview.id, preview.mimeType, preview.filename)"
+                      class="photo-img"
+                      :src="thumbs[preview.id]"
+                      :alt="preview.filename"
+                      loading="lazy"
+                      @error="onThumbError(preview.id)"
+                    />
+                    <div v-else class="photo-fallback">{{ preview.mimeType }}</div>
+                  </div>
+                </div>
+                <div v-else class="album-empty-preview">📁</div>
+                <div class="album-card-meta">
+                  <div class="album-card-name">📁 {{ album.name }}</div>
+                  <div class="muted">{{ album.mediaCount }} item(s)</div>
+                </div>
+              </article>
+            </div>
+
+            <template v-if="mediaViewMode === 'files'">
+              <article
+                v-for="item in renderedMedia"
+                :key="item.id"
+                class="photo-card"
+                :data-media-id="item.id"
+                :class="{ active: activeMediaId === item.id, selected: selectedMediaSet.has(item.id), 'long-press-pending': isLongPressPending('media', item.id), 'select-mode': isMobileViewport && mobileSelectMode, 'file-tile-card': mediaViewMode === 'files' }"
+                draggable="true"
+                @dragstart="onMediaDragStart(item.id, $event)"
+                @dragend="onMediaDragEnd"
+                @click="onMediaCardClick(item.id, $event)"
+                @contextmenu.prevent="openMediaContextMenu($event, item.id)"
+                @dblclick="onMediaCardDoubleClick(item.id)"
+                @touchstart="startTouchGesture('media', item.id, $event)"
+                @touchmove.passive="moveTouchGesture($event)"
+                @touchend="finishMediaTouch(item.id)"
+                @touchcancel="cancelTouchGesture"
+              >
+                <div v-if="isMobileViewport && mobileSelectMode" class="card-select-indicator" :class="{ selected: selectedMediaSet.has(item.id) }">
+                  <i v-if="selectedMediaSet.has(item.id)" class="ri-check-line" aria-hidden="true"></i>
+                </div>
+                <button class="card-menu-btn menu-dots-btn" @click.stop="openMediaContextMenu($event, item.id)">
+                  ⋯
+                </button>
+                <div
+                  v-if="item.isFavorite || (item.revisionCount ?? 0) > 0 || isMediaShareEnabled(item.id)"
+                  class="photo-status-badges"
+                >
+                  <span v-if="item.isFavorite" class="photo-status-chip is-favorite">favorite</span>
+                  <span v-if="(item.revisionCount ?? 0) > 0" class="photo-status-chip is-edited">edited</span>
+                  <span v-if="isMediaShareEnabled(item.id)" class="photo-status-chip is-shared">shared</span>
+                </div>
+
                 <div class="file-tile-preview">
                   <img
                     v-if="thumbs[item.id] && canPreviewInBrowser(item)"
@@ -5044,53 +5107,112 @@ onBeforeUnmount(() => {
                   <div class="file-tile-sub">{{ formatFileExtension(item.filename) }} · {{ formatFileSize(item.sizeBytes) }}</div>
                   <div class="file-tile-sub">{{ formatDateLabel(item.metadataCreatedAt || item.capturedAt || item.createdAt) }}</div>
                 </div>
-              </template>
-              <template v-else>
-                <img
-                  v-if="thumbs[item.id] && canPreviewInBrowser(item)"
-                  class="photo-img"
-                  :src="thumbs[item.id]"
-                  :alt="item.filename"
-                  :style="mediaFilterStyle(item)"
-                  loading="lazy"
-                  @error="onThumbError(item.id)"
-                />
-                <div v-else class="photo-fallback">
-                  {{ item.mimeType }}
-                </div>
-                <div
-                  v-if="item.mediaTags.length > 0"
-                  class="photo-card-tags"
-                  :class="{ 'has-fav': item.isFavorite }"
-                >
-                  <span
-                    v-for="entry in item.mediaTags"
-                    :key="`card-tag-${item.id}-${entry.tag.id}`"
-                    class="chip-lite photo-card-tag"
+                <div v-if="!isMobileViewport" class="photo-card-quick-actions">
+                  <button
+                    class="card-quick-btn"
+                    :title="item.isFavorite ? 'Unfavorite' : 'Favorite'"
+                    @click.stop="toggleFavorite(item.id)"
                   >
-                    # {{ entry.tag.name }}
-                  </span>
+                    {{ item.isFavorite ? '★' : '☆' }}
+                  </button>
+                  <button
+                    class="card-quick-btn"
+                    title="Share settings"
+                    @click.stop="configureMediaShare(item.id)"
+                  >
+                    ↗
+                  </button>
+                  <button class="card-quick-btn danger" title="Delete" @click.stop="deleteMedia(item.id)">🗑</button>
                 </div>
-              </template>
-              <div v-if="!isMobileViewport" class="photo-card-quick-actions">
-                <button
-                  class="card-quick-btn"
-                  :title="item.isFavorite ? 'Unfavorite' : 'Favorite'"
-                  @click.stop="toggleFavorite(item.id)"
+                <div class="fav-indicator" v-if="item.isFavorite">★</div>
+              </article>
+            </template>
+
+            <div v-else class="js-masonry-columns" :style="{ '--js-masonry-columns': String(Math.max(1, galleryMasonryColumns.length || 1)) }">
+              <div
+                v-for="(column, columnIndex) in galleryMasonryColumns"
+                :key="`masonry-col-${columnIndex}`"
+                class="js-masonry-column"
+              >
+                <article
+                  v-for="item in column"
+                  :key="item.id"
+                  class="photo-card"
+                  :data-media-id="item.id"
+                  :class="{ active: activeMediaId === item.id, selected: selectedMediaSet.has(item.id), 'long-press-pending': isLongPressPending('media', item.id), 'select-mode': isMobileViewport && mobileSelectMode }"
+                  draggable="true"
+                  @dragstart="onMediaDragStart(item.id, $event)"
+                  @dragend="onMediaDragEnd"
+                  @click="onMediaCardClick(item.id, $event)"
+                  @contextmenu.prevent="openMediaContextMenu($event, item.id)"
+                  @dblclick="onMediaCardDoubleClick(item.id)"
+                  @touchstart="startTouchGesture('media', item.id, $event)"
+                  @touchmove.passive="moveTouchGesture($event)"
+                  @touchend="finishMediaTouch(item.id)"
+                  @touchcancel="cancelTouchGesture"
                 >
-                  {{ item.isFavorite ? '★' : '☆' }}
-                </button>
-                <button
-                  class="card-quick-btn"
-                  title="Share settings"
-                  @click.stop="configureMediaShare(item.id)"
-                >
-                  ↗
-                </button>
-                <button class="card-quick-btn danger" title="Delete" @click.stop="deleteMedia(item.id)">🗑</button>
+                  <div v-if="isMobileViewport && mobileSelectMode" class="card-select-indicator" :class="{ selected: selectedMediaSet.has(item.id) }">
+                    <i v-if="selectedMediaSet.has(item.id)" class="ri-check-line" aria-hidden="true"></i>
+                  </div>
+                  <div v-if="mediaDateMarkers[item.id]" class="photo-date-block">{{ mediaDateMarkers[item.id] }}</div>
+                  <button class="card-menu-btn menu-dots-btn" @click.stop="openMediaContextMenu($event, item.id)">
+                    ⋯
+                  </button>
+                  <div
+                    v-if="item.isFavorite || (item.revisionCount ?? 0) > 0 || isMediaShareEnabled(item.id)"
+                    class="photo-status-badges"
+                  >
+                    <span v-if="item.isFavorite" class="photo-status-chip is-favorite">favorite</span>
+                    <span v-if="(item.revisionCount ?? 0) > 0" class="photo-status-chip is-edited">edited</span>
+                    <span v-if="isMediaShareEnabled(item.id)" class="photo-status-chip is-shared">shared</span>
+                  </div>
+
+                  <img
+                    v-if="thumbs[item.id] && canPreviewInBrowser(item)"
+                    class="photo-img"
+                    :src="thumbs[item.id]"
+                    :alt="item.filename"
+                    :style="mediaFilterStyle(item)"
+                    loading="lazy"
+                    @error="onThumbError(item.id)"
+                  />
+                  <div v-else class="photo-fallback">
+                    {{ item.mimeType }}
+                  </div>
+                  <div
+                    v-if="item.mediaTags.length > 0"
+                    class="photo-card-tags"
+                    :class="{ 'has-fav': item.isFavorite }"
+                  >
+                    <span
+                      v-for="entry in item.mediaTags"
+                      :key="`card-tag-${item.id}-${entry.tag.id}`"
+                      class="chip-lite photo-card-tag"
+                    >
+                      # {{ entry.tag.name }}
+                    </span>
+                  </div>
+                  <div v-if="!isMobileViewport" class="photo-card-quick-actions">
+                    <button
+                      class="card-quick-btn"
+                      :title="item.isFavorite ? 'Unfavorite' : 'Favorite'"
+                      @click.stop="toggleFavorite(item.id)"
+                    >
+                      {{ item.isFavorite ? '★' : '☆' }}
+                    </button>
+                    <button
+                      class="card-quick-btn"
+                      title="Share settings"
+                      @click.stop="configureMediaShare(item.id)"
+                    >
+                      ↗
+                    </button>
+                    <button class="card-quick-btn danger" title="Delete" @click.stop="deleteMedia(item.id)">🗑</button>
+                  </div>
+                  <div class="fav-indicator" v-if="item.isFavorite">★</div>
+                </article>
               </div>
-              <div class="fav-indicator" v-if="item.isFavorite">★</div>
-            </article>
+            </div>
 
             <div
               v-if="useMediaWindowing && mediaWindowBottomPadding > 0"
