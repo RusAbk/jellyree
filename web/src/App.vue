@@ -1534,7 +1534,7 @@ function contextConvertMediaToJpg() {
 }
 
 async function downloadSelectedAsZip() {
-  if (!token.value || selectedMediaIds.value.length === 0) return
+  if (!token.value || selectedMediaIds.value.length < 2) return
 
   try {
     const payload = await api.downloadBulkBlob(authHeaders(), selectedMediaIds.value)
@@ -2982,7 +2982,7 @@ async function deleteAlbum(album: Album) {
 }
 
 async function bulkMoveSelectedToAlbum() {
-  if (!token.value || selectedMediaIds.value.length === 0 || !bulkTargetAlbumId.value) return
+  if (!token.value || selectedMediaIds.value.length < 2 || !bulkTargetAlbumId.value) return
 
   try {
     await api.bulkMoveAlbum(authHeaders(), selectedMediaIds.value, bulkTargetAlbumId.value)
@@ -2994,7 +2994,7 @@ async function bulkMoveSelectedToAlbum() {
 }
 
 async function bulkSetFavorite(value: boolean) {
-  if (!token.value || selectedMediaIds.value.length === 0) return
+  if (!token.value || selectedMediaIds.value.length < 2) return
 
   try {
     await api.bulkFavorite(authHeaders(), selectedMediaIds.value, value)
@@ -3008,7 +3008,7 @@ async function bulkSetFavorite(value: boolean) {
 }
 
 async function bulkDeleteSelected() {
-  if (!token.value || selectedMediaIds.value.length === 0) return
+  if (!token.value || selectedMediaIds.value.length < 2) return
   const ok = window.confirm(`Delete ${selectedMediaIds.value.length} selected photo(s)?`)
   if (!ok) return
 
@@ -3928,24 +3928,7 @@ onBeforeUnmount(() => {
               <i class="ri-book-2-line" aria-hidden="true"></i>
               <span>Library</span>
             </button>
-            <div class="mobile-menu-subtitle">View</div>
-            <div class="mobile-view-controls">
-              <label class="mobile-view-control">
-                <span>Mode</span>
-                <select v-model="mediaViewMode" class="input">
-                  <option value="gallery">Gallery</option>
-                  <option value="files">Files</option>
-                </select>
-              </label>
-              <label class="mobile-view-control">
-                <span>Sort by</span>
-                <select v-model="mediaSortBy" class="input">
-                  <option value="date">Date</option>
-                  <option value="name">Name</option>
-                </select>
-              </label>
-            </div>
-            <button class="mobile-screen-item" @click="openMobileMenuScreen('bulk')">
+            <button class="mobile-screen-item" :disabled="selectedCount < 2" @click="openMobileMenuScreen('bulk')">
               <i class="ri-stack-line" aria-hidden="true"></i>
               <span>Bulk actions</span>
             </button>
@@ -4014,27 +3997,27 @@ onBeforeUnmount(() => {
               placeholder="Move selected to album..."
               empty-option-label="Move selected to album..."
             />
-            <button class="mobile-screen-item" :disabled="selectedCount === 0 || !bulkTargetAlbumId" @click="bulkMoveSelectedToAlbum; closeMobileUserMenu()">
+            <button class="mobile-screen-item" :disabled="selectedCount < 2 || !bulkTargetAlbumId" @click="bulkMoveSelectedToAlbum; closeMobileUserMenu()">
               <i class="ri-folder-transfer-line" aria-hidden="true"></i>
               <span>Move selected</span>
             </button>
-            <button class="mobile-screen-item" :disabled="selectedCount === 0" @click="bulkSetFavorite(true); closeMobileUserMenu()">
+            <button class="mobile-screen-item" :disabled="selectedCount < 2" @click="bulkSetFavorite(true); closeMobileUserMenu()">
               <i class="ri-star-line" aria-hidden="true"></i>
               <span>Favorite selected</span>
             </button>
-            <button class="mobile-screen-item" :disabled="selectedCount === 0" @click="bulkSetFavorite(false); closeMobileUserMenu()">
+            <button class="mobile-screen-item" :disabled="selectedCount < 2" @click="bulkSetFavorite(false); closeMobileUserMenu()">
               <i class="ri-star-off-line" aria-hidden="true"></i>
               <span>Unfavorite selected</span>
             </button>
-            <button class="mobile-screen-item" :disabled="selectedCount === 0" @click="downloadSelectedAsZip; closeMobileUserMenu()">
+            <button class="mobile-screen-item" :disabled="selectedCount < 2" @click="downloadSelectedAsZip; closeMobileUserMenu()">
               <i class="ri-download-2-line" aria-hidden="true"></i>
               <span>Download selected</span>
             </button>
-            <button class="mobile-screen-item danger" :disabled="selectedCount === 0" @click="bulkDeleteSelected; closeMobileUserMenu()">
+            <button class="mobile-screen-item danger" :disabled="selectedCount < 2" @click="bulkDeleteSelected; closeMobileUserMenu()">
               <i class="ri-delete-bin-line" aria-hidden="true"></i>
               <span>Delete selected</span>
             </button>
-            <button class="mobile-screen-item" :disabled="selectedCount === 0" @click="clearSelection; closeMobileUserMenu()">
+            <button class="mobile-screen-item" :disabled="selectedCount < 2" @click="clearSelection; closeMobileUserMenu()">
               <i class="ri-close-circle-line" aria-hidden="true"></i>
               <span>Clear selection</span>
             </button>
@@ -4168,24 +4151,45 @@ onBeforeUnmount(() => {
                 <span class="chip-lite tag-filter-mode-chip">{{ tagFilterMode === 'and' ? 'AND' : 'OR' }}</span>
               </div>
             </div>
+
+            <div class="view-sort-icon-panel shell" aria-label="View and sort controls">
+              <button
+                class="chip icon-chip"
+                :class="{ active: mediaViewMode === 'gallery' }"
+                title="Gallery view"
+                @click="mediaViewMode = 'gallery'"
+              >
+                <i class="ri-layout-grid-line" aria-hidden="true"></i>
+              </button>
+              <button
+                class="chip icon-chip"
+                :class="{ active: mediaViewMode === 'files' }"
+                title="Files view"
+                @click="mediaViewMode = 'files'"
+              >
+                <i class="ri-file-list-3-line" aria-hidden="true"></i>
+              </button>
+              <button
+                class="chip icon-chip"
+                :class="{ active: mediaSortBy === 'date' }"
+                title="Sort by date"
+                @click="mediaSortBy = 'date'"
+              >
+                <i class="ri-calendar-line" aria-hidden="true"></i>
+              </button>
+              <button
+                class="chip icon-chip"
+                :class="{ active: mediaSortBy === 'name' }"
+                title="Sort by name"
+                @click="mediaSortBy = 'name'"
+              >
+                <i class="ri-sort-alphabet-asc" aria-hidden="true"></i>
+              </button>
+            </div>
           </div>
 
-          <div v-if="!isMobileViewport" class="gallery-toolbar shell">
+          <div v-if="!isMobileViewport && selectedCount >= 2" class="gallery-toolbar shell">
             <div class="row-actions">
-              <label class="toolbar-select-wrap">
-                <span class="toolbar-select-label">View</span>
-                <select v-model="mediaViewMode" class="input toolbar-select">
-                  <option value="gallery">Gallery</option>
-                  <option value="files">Files</option>
-                </select>
-              </label>
-              <label class="toolbar-select-wrap">
-                <span class="toolbar-select-label">Sort by</span>
-                <select v-model="mediaSortBy" class="input toolbar-select">
-                  <option value="date">Date</option>
-                  <option value="name">Name</option>
-                </select>
-              </label>
               <AlbumTreeSelect
                 v-model="bulkTargetAlbumId"
                 :albums="albums"
@@ -4193,14 +4197,14 @@ onBeforeUnmount(() => {
                 placeholder="Move selected to album..."
                 empty-option-label="Move selected to album..."
               />
-              <button class="btn ghost" :disabled="selectedCount === 0 || !bulkTargetAlbumId" @click="bulkMoveSelectedToAlbum">
+              <button class="btn ghost" :disabled="selectedCount < 2 || !bulkTargetAlbumId" @click="bulkMoveSelectedToAlbum">
                 Move selected
               </button>
-              <button class="btn ghost" :disabled="selectedCount === 0" @click="bulkSetFavorite(true)">Favorite selected</button>
-              <button class="btn ghost" :disabled="selectedCount === 0" @click="bulkSetFavorite(false)">Unfavorite selected</button>
-              <button class="btn ghost" :disabled="selectedCount === 0" @click="downloadSelectedAsZip">Download selected</button>
-              <button class="btn ghost danger" :disabled="selectedCount === 0" @click="bulkDeleteSelected">Delete selected</button>
-              <button class="btn ghost" :disabled="selectedCount === 0" @click="clearSelection">Clear selection</button>
+              <button class="btn ghost" :disabled="selectedCount < 2" @click="bulkSetFavorite(true)">Favorite selected</button>
+              <button class="btn ghost" :disabled="selectedCount < 2" @click="bulkSetFavorite(false)">Unfavorite selected</button>
+              <button class="btn ghost" :disabled="selectedCount < 2" @click="downloadSelectedAsZip">Download selected</button>
+              <button class="btn ghost danger" :disabled="selectedCount < 2" @click="bulkDeleteSelected">Delete selected</button>
+              <button class="btn ghost" :disabled="selectedCount < 2" @click="clearSelection">Clear selection</button>
               <div class="muted" v-if="loading">Loading...</div>
             </div>
           </div>
