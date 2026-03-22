@@ -116,6 +116,7 @@ const expandedAlbumIds = ref<string[]>(
 const targetAlbumId = ref('')
 const bulkTargetAlbumId = ref('')
 const editorCropStage = ref<HTMLDivElement | null>(null)
+const galleryMainRef = ref<HTMLElement | null>(null)
 const masonryRef = ref<HTMLElement | null>(null)
 const tagsInputRef = ref<HTMLInputElement | null>(null)
 const lightboxTagsInputRef = ref<HTMLInputElement | null>(null)
@@ -215,10 +216,13 @@ let popStateHandler: (() => void) | null = null
 const thumbLoadsInFlight = new Map<string, Promise<void>>()
 const fullImageLoadsInFlight = new Map<string, Promise<void>>()
 const fullImageAbortControllers = new Map<string, AbortController>()
+const pendingThumbUpdates = new Map<string, string>()
 let progressiveThumbLoadRunId = 0
 let thumbVisibilityObserver: IntersectionObserver | null = null
 let thumbObserverRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let thumbFlushTimer: ReturnType<typeof requestAnimationFrame> | null = null
 let loadAllRunId = 0
+let virtualWindowUpdateTimer: ReturnType<typeof requestAnimationFrame> | null = null
 const thumbQueue = {
   active: 0,
   limit: 6,
@@ -636,6 +640,86 @@ const editorPreviewFrameStyle = computed(() => ({
 }))
 
 const mediaDensitySteps: Array<'s' | 'm' | 'l'> = ['s', 'm', 'l']
+const virtualWindowState = reactive({
+  scrollTop: 0,
+  viewportHeight: 0,
+})
+
+const useMediaWindowing = computed(() => routeMode.value === 'app' && filteredMedia.value.length > 240)
+
+function getMasonryColumnCount(viewportWidth: number) {
+  if (viewportWidth <= 560) return 1
+  if (viewportWidth <= 860) return 2
+
+  if (viewportWidth <= 1080) {
+    if (mediaDensity.value === 's') return 3
+    if (mediaDensity.value === 'm') return 2
+    return 1
+  }
+
+  if (viewportWidth <= 1280) {
+    if (mediaDensity.value === 's') return 4
+    if (mediaDensity.value === 'm') return 3
+    return 2
+  }
+
+  if (mediaDensity.value === 's') return 5
+  if (mediaDensity.value === 'm') return 4
+  return 3
+}
+
+function getEstimatedMediaRowHeight() {
+  if (mediaViewMode.value === 'files') {
+    if (mediaDensity.value === 's') return 210
+    if (mediaDensity.value === 'm') return 248
+    return 310
+  }
+
+  if (mediaDensity.value === 's') return 220
+  if (mediaDensity.value === 'm') return 270
+  return 340
+}
+
+const mediaVirtualWindow = computed(() => {
+  const total = filteredMedia.value.length
+  if (total === 0 || !useMediaWindowing.value) {
+    return {
+      start: 0,
+      end: total,
+      topPadding: 0,
+      bottomPadding: 0,
+    }
+  }
+
+  const main = galleryMainRef.value
+  const viewportWidth = main?.clientWidth || window.innerWidth
+  const columns = Math.max(1, getMasonryColumnCount(viewportWidth))
+  const estimatedRowHeight = getEstimatedMediaRowHeight()
+  const viewportHeight = Math.max(1, virtualWindowState.viewportHeight || main?.clientHeight || window.innerHeight)
+  const rowsInView = Math.ceil(viewportHeight / estimatedRowHeight)
+  const overscanRows = 6
+  const scrollTop = Math.max(0, virtualWindowState.scrollTop)
+  const currentRow = Math.floor(scrollTop / estimatedRowHeight)
+  const startRow = Math.max(0, currentRow - overscanRows)
+  const endRow = currentRow + rowsInView + overscanRows
+
+  const start = Math.min(total, Math.max(0, startRow * columns))
+  const end = Math.min(total, Math.max(start, endRow * columns))
+
+  const totalRows = Math.ceil(total / columns)
+  const topPadding = startRow * estimatedRowHeight
+  const bottomPadding = Math.max(0, (totalRows - Math.ceil(end / columns)) * estimatedRowHeight)
+
+  return { start, end, topPadding, bottomPadding }
+})
+
+const renderedMedia = computed(() => {
+  const { start, end } = mediaVirtualWindow.value
+  return filteredMedia.value.slice(start, end)
+})
+
+const mediaWindowTopPadding = computed(() => mediaVirtualWindow.value.topPadding)
+const mediaWindowBottomPadding = computed(() => mediaVirtualWindow.value.bottomPadding)
 
 function authHeaders() {
   return token.value
@@ -1645,7 +1729,35 @@ function canPreviewFromMeta(mediaId: string, mimeType: string, filename: string)
 
 function onThumbError(mediaId: string) {
   clearLightboxFullImage(mediaId)
-  thumbs.value[mediaId] = ''
+  queueThumbUpdate(mediaId, '')
+}
+
+function flushThumbUpdates() {
+  thumbFlushTimer = null
+  if (pendingThumbUpdates.size === 0) return
+
+  const next = { ...thumbs.value }
+  for (const [mediaId, value] of pendingThumbUpdates.entries()) {
+    next[mediaId] = value
+  }
+  pendingThumbUpdates.clear()
+  thumbs.value = next
+}
+
+function queueThumbUpdate(mediaId: string, value: string) {
+  pendingThumbUpdates.set(mediaId, value)
+  if (thumbFlushTimer !== null) return
+  thumbFlushTimer = requestAnimationFrame(flushThumbUpdates)
+}
+
+async function decodeImageBlobIfSupported(blob: Blob) {
+  if (typeof window === 'undefined' || !('createImageBitmap' in window)) return
+  try {
+    const imageBitmap = await createImageBitmap(blob)
+    imageBitmap.close()
+  } catch {
+    return
+  }
 }
 
 function clearThumb(mediaId: string) {
@@ -1772,13 +1884,15 @@ async function loadThumb(mediaId: string) {
       const mediaItem = media.value.find((item) => item.id === mediaId)
       const version = mediaItem?.updatedAt ? Date.parse(mediaItem.updatedAt) : undefined
       const blob = await api.fetchThumbBlob(token.value as string, mediaId, width, Number.isFinite(version) ? version : undefined)
-      thumbs.value[mediaId] = URL.createObjectURL(blob)
+      await decodeImageBlobIfSupported(blob)
+      queueThumbUpdate(mediaId, URL.createObjectURL(blob))
     } catch {
       try {
         const blob = await api.fetchFileBlob(token.value as string, mediaId)
-        thumbs.value[mediaId] = URL.createObjectURL(blob)
+        await decodeImageBlobIfSupported(blob)
+        queueThumbUpdate(mediaId, URL.createObjectURL(blob))
       } catch {
-        thumbs.value[mediaId] = ''
+        queueThumbUpdate(mediaId, '')
       }
     } finally {
       thumbQueue.active = Math.max(0, thumbQueue.active - 1)
@@ -1801,6 +1915,7 @@ async function loadThumbsProgressively(items: MediaItem[]) {
   const ids = items
     .map((item) => item.id)
     .filter((id) => !thumbs.value[id])
+    .slice(0, 240)
 
   if (ids.length === 0) return
 
@@ -1879,7 +1994,7 @@ async function loadThumbsNearViewport() {
   const cards = Array.from(masonry.querySelectorAll<HTMLElement>('.photo-card[data-media-id]'))
   const viewportTop = -320
   const viewportBottom = window.innerHeight + 320
-  const prioritizedIds = cards
+  const visibleIds = cards
     .filter((card) => {
       const mediaId = card.dataset.mediaId
       if (!mediaId || thumbs.value[mediaId]) return false
@@ -1887,10 +2002,44 @@ async function loadThumbsNearViewport() {
       return rect.bottom >= viewportTop && rect.top <= viewportBottom
     })
     .map((card) => card.dataset.mediaId as string)
-    .slice(0, 40)
+    .slice(0, 48)
 
-  if (prioritizedIds.length === 0) return
-  await Promise.all(prioritizedIds.map((id) => loadThumb(id)))
+  if (visibleIds.length === 0) return
+
+  const indexById = new Map(filteredMedia.value.map((item, index) => [item.id, index]))
+  const prioritized = new Set<string>(visibleIds)
+  for (const id of visibleIds.slice(0, 24)) {
+    const index = indexById.get(id)
+    if (index === undefined) continue
+    for (let offset = -4; offset <= 4; offset += 1) {
+      if (offset === 0) continue
+      const neighbor = filteredMedia.value[index + offset]
+      if (neighbor && !thumbs.value[neighbor.id]) {
+        prioritized.add(neighbor.id)
+      }
+    }
+  }
+
+  await Promise.all(Array.from(prioritized).map((id) => loadThumb(id)))
+}
+
+function updateVirtualWindowState() {
+  const main = galleryMainRef.value
+  if (!main) return
+  virtualWindowState.scrollTop = main.scrollTop
+  virtualWindowState.viewportHeight = main.clientHeight
+}
+
+function scheduleVirtualWindowStateUpdate() {
+  if (virtualWindowUpdateTimer !== null) return
+  virtualWindowUpdateTimer = requestAnimationFrame(() => {
+    virtualWindowUpdateTimer = null
+    updateVirtualWindowState()
+  })
+}
+
+function onGalleryScroll() {
+  scheduleVirtualWindowStateUpdate()
 }
 
 function scheduleThumbVisibilityRefresh() {
@@ -3694,12 +3843,22 @@ watch(filteredMedia, (items) => {
   if (activeMediaId.value && !allowed.has(activeMediaId.value)) {
     activeMediaId.value = selectedMediaIds.value[0] || null
   }
+  updateVirtualWindowState()
   scheduleThumbVisibilityRefresh()
   void (async () => {
     await loadThumbsNearViewport()
     await loadThumbsProgressively(items)
   })()
 })
+
+watch(
+  () => [mediaViewMode.value, mediaDensity.value],
+  () => {
+    updateVirtualWindowState()
+    scheduleThumbVisibilityRefresh()
+    void loadThumbsNearViewport()
+  },
+)
 
 watch(visibleSubalbumPreviewMedia, (items) => {
   items.forEach((preview) => {
@@ -3744,6 +3903,7 @@ watch([activeAlbumId, activeMediaId, token, routeMode], () => {
 
 onMounted(async () => {
   updateLayoutFlags()
+  updateVirtualWindowState()
 
   popStateHandler = () => {
     void applyRouteFromLocation()
@@ -3785,6 +3945,15 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', onGlobalPointerDown)
   window.removeEventListener('resize', updateLayoutFlags)
   teardownThumbVisibilityObserver()
+  if (thumbFlushTimer !== null) {
+    cancelAnimationFrame(thumbFlushTimer)
+    thumbFlushTimer = null
+  }
+  if (virtualWindowUpdateTimer !== null) {
+    cancelAnimationFrame(virtualWindowUpdateTimer)
+    virtualWindowUpdateTimer = null
+  }
+  pendingThumbUpdates.clear()
   clearLightboxFullImage()
   if (toastTimer) {
     clearTimeout(toastTimer)
@@ -4159,7 +4328,14 @@ onBeforeUnmount(() => {
           </div>
         </aside>
 
-        <main class="gallery-main" :class="`density-${mediaDensity}`" @pointerdown="startMarqueeSelect" @wheel="onGalleryWheel">
+        <main
+          ref="galleryMainRef"
+          class="gallery-main"
+          :class="`density-${mediaDensity}`"
+          @pointerdown="startMarqueeSelect"
+          @wheel="onGalleryWheel"
+          @scroll.passive="onGalleryScroll"
+        >
           <div class="gallery-head">
             <div>
               <nav class="gallery-breadcrumbs" aria-label="Gallery breadcrumbs">
@@ -4298,6 +4474,13 @@ onBeforeUnmount(() => {
             ref="masonryRef"
             :class="[mediaViewMode === 'files' ? 'files-grid' : 'masonry', `density-${mediaDensity}`]"
           >
+            <div
+              v-if="useMediaWindowing && mediaWindowTopPadding > 0"
+              class="media-window-spacer media-window-spacer-top"
+              :style="{ height: `${mediaWindowTopPadding}px` }"
+              aria-hidden="true"
+            ></div>
+
             <article
               v-for="album in visibleSubalbums"
               :key="`subalbum-${album.id}`"
@@ -4348,7 +4531,7 @@ onBeforeUnmount(() => {
             </article>
 
             <article
-              v-for="item in filteredMedia"
+              v-for="item in renderedMedia"
               :key="item.id"
               class="photo-card"
               :data-media-id="item.id"
@@ -4421,6 +4604,13 @@ onBeforeUnmount(() => {
               </template>
               <div class="fav-indicator" v-if="item.isFavorite">★</div>
             </article>
+
+            <div
+              v-if="useMediaWindowing && mediaWindowBottomPadding > 0"
+              class="media-window-spacer media-window-spacer-bottom"
+              :style="{ height: `${mediaWindowBottomPadding}px` }"
+              aria-hidden="true"
+            ></div>
           </div>
           <div v-if="marquee.active && !showGalleryLoadingState" class="marquee-box" :style="marqueeStyle"></div>
 

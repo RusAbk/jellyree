@@ -832,6 +832,20 @@ body {
   position: relative;
 }
 
+.media-window-spacer {
+  width: 100%;
+  pointer-events: none;
+}
+
+.files-grid .media-window-spacer {
+  grid-column: 1 / -1;
+}
+
+.masonry .media-window-spacer {
+  break-inside: avoid;
+  column-span: all;
+}
+
 .gallery-main.density-s {
   --masonry-columns: 5;
   --file-tile-min: 150px;
