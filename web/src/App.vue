@@ -1158,11 +1158,28 @@ function closeContextMenus() {
   mediaContextMenu.mediaId = null
 }
 
+function getSafeContextMenuPosition(x: number, y: number, estimatedHeight: number) {
+  if (typeof window === 'undefined') {
+    return { x, y }
+  }
+
+  const margin = 8
+  const estimatedWidth = 240
+  const maxX = Math.max(margin, window.innerWidth - estimatedWidth - margin)
+  const maxY = Math.max(margin, window.innerHeight - estimatedHeight - margin)
+
+  return {
+    x: Math.max(margin, Math.min(x, maxX)),
+    y: Math.max(margin, Math.min(y, maxY)),
+  }
+}
+
 function openAlbumContextMenuAt(albumId: string, x: number, y: number) {
+  const position = getSafeContextMenuPosition(x, y, 320)
   albumContextMenu.open = true
   albumContextMenu.albumId = albumId
-  albumContextMenu.x = x
-  albumContextMenu.y = y
+  albumContextMenu.x = position.x
+  albumContextMenu.y = position.y
   mediaContextMenu.open = false
   mediaContextMenu.mediaId = null
   void preloadAlbumShareState(albumId)
@@ -1175,11 +1192,12 @@ function openAlbumContextMenu(event: MouseEvent, albumId: string) {
 }
 
 function openMediaContextMenuAt(mediaId: string, x: number, y: number) {
+  const position = getSafeContextMenuPosition(x, y, 360)
   selectMedia(mediaId)
   mediaContextMenu.open = true
   mediaContextMenu.mediaId = mediaId
-  mediaContextMenu.x = x
-  mediaContextMenu.y = y
+  mediaContextMenu.x = position.x
+  mediaContextMenu.y = position.y
   albumContextMenu.open = false
   albumContextMenu.albumId = null
   void preloadMediaShareState(mediaId)
