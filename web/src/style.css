@@ -688,7 +688,8 @@ body {
 }
 
 .album-tree-option {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: none;
   background: transparent;
   color: var(--text);
@@ -719,6 +720,41 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.album-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.album-tree-expander,
+.album-tree-expander-spacer {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.album-tree-expander {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.album-tree-expander:hover {
+  background: var(--bg-4);
+  color: var(--text);
+}
+
+.album-tree-expander-spacer {
+  opacity: 0;
 }
 
 .album-tree-empty {

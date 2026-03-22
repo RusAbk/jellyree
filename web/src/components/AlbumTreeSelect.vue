@@ -7,6 +7,7 @@ type AlbumTreeItem = {
   name: string
   depth: number
   parentId: string | null
+  hasChildren: boolean
 }
 
 const props = withDefaults(
@@ -37,33 +38,51 @@ const rootRef = ref<HTMLElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const open = ref(false)
 const search = ref('')
+const expandedAlbumIds = ref<string[]>([])
+const knownParentIds = ref<string[]>([])
+const expandedInitialized = ref(false)
 
 const albumById = computed(() => new Map(props.albums.map((album) => [album.id, album])))
 
-const treeItems = computed<AlbumTreeItem[]>(() => {
-  const byParent = new Map<string | null, Album[]>()
+const childrenByParent = computed(() => {
+  const map = new Map<string | null, Album[]>()
 
   for (const album of props.albums) {
     const key = album.parentId || null
-    const bucket = byParent.get(key) || []
+    const bucket = map.get(key) || []
     bucket.push(album)
-    byParent.set(key, bucket)
+    map.set(key, bucket)
   }
 
-  for (const [key, bucket] of byParent.entries()) {
-    byParent.set(key, [...bucket].sort((a, b) => a.name.localeCompare(b.name)))
+  for (const [key, bucket] of map.entries()) {
+    map.set(key, [...bucket].sort((a, b) => a.name.localeCompare(b.name)))
   }
 
+  return map
+})
+
+const parentAlbumIds = computed(() => {
+  const ids = new Set<string>()
+  for (const album of props.albums) {
+    if (album.parentId) {
+      ids.add(album.parentId)
+    }
+  }
+  return ids
+})
+
+const treeItems = computed<AlbumTreeItem[]>(() => {
   const result: AlbumTreeItem[] = []
 
   const walk = (parentId: string | null, depth: number) => {
-    const children = byParent.get(parentId) || []
+    const children = childrenByParent.value.get(parentId) || []
     for (const album of children) {
       result.push({
         id: album.id,
         name: album.name,
         depth,
         parentId,
+        hasChildren: (childrenByParent.value.get(album.id) || []).length > 0,
       })
       walk(album.id, depth + 1)
     }
@@ -91,6 +110,28 @@ const filteredTreeItems = computed(() => {
   }
 
   return treeItems.value.filter((item) => includeIds.has(item.id))
+})
+
+const visibleTreeItems = computed(() => {
+  if (search.value.trim()) {
+    return filteredTreeItems.value
+  }
+
+  const expandedSet = new Set(expandedAlbumIds.value)
+  const visibleIds = new Set<string>()
+  const result: AlbumTreeItem[] = []
+
+  for (const item of treeItems.value) {
+    const isVisible =
+      item.parentId === null ||
+      (visibleIds.has(item.parentId) && expandedSet.has(item.parentId))
+
+    if (!isVisible) continue
+    result.push(item)
+    visibleIds.add(item.id)
+  }
+
+  return result
 })
 
 const selectedLabel = computed(() => {
@@ -122,6 +163,17 @@ function selectAlbum(albumId: string) {
   closePanel(false)
 }
 
+function toggleExpanded(albumId: string) {
+  if (search.value.trim()) return
+
+  if (expandedAlbumIds.value.includes(albumId)) {
+    expandedAlbumIds.value = expandedAlbumIds.value.filter((id) => id !== albumId)
+    return
+  }
+
+  expandedAlbumIds.value = [...expandedAlbumIds.value, albumId]
+}
+
 function onDocumentPointerDown(event: PointerEvent) {
   const target = event.target as Node | null
   if (!target || !rootRef.value) return
@@ -146,6 +198,32 @@ watch(
   () => {
     search.value = ''
   },
+)
+
+watch(
+  parentAlbumIds,
+  (nextSet) => {
+    const nextIds = Array.from(nextSet)
+    const knownSet = new Set(knownParentIds.value)
+
+    if (!expandedInitialized.value) {
+      expandedAlbumIds.value = [...nextIds]
+      knownParentIds.value = [...nextIds]
+      expandedInitialized.value = true
+      return
+    }
+
+    const expandedSet = new Set(expandedAlbumIds.value)
+    for (const id of nextIds) {
+      if (!knownSet.has(id)) {
+        expandedSet.add(id)
+      }
+    }
+
+    expandedAlbumIds.value = Array.from(expandedSet)
+    knownParentIds.value = [...nextIds]
+  },
+  { immediate: true },
 )
 
 onMounted(() => {
@@ -191,19 +269,35 @@ onBeforeUnmount(() => {
           {{ emptyOptionLabel || placeholder }}
         </button>
 
-        <button
-          v-for="item in filteredTreeItems"
+        <div
+          v-for="item in visibleTreeItems"
           :key="`album-tree-item-${item.id}`"
-          type="button"
-          class="album-tree-option"
-          :class="{ selected: modelValue === item.id }"
-          :style="{ paddingLeft: `${12 + item.depth * 16}px` }"
-          @click="selectAlbum(item.id)"
+          class="album-tree-row"
+          :style="{ paddingLeft: `${6 + item.depth * 16}px` }"
         >
-          <span class="album-tree-option-name">{{ item.name }}</span>
-        </button>
+          <button
+            v-if="item.hasChildren"
+            type="button"
+            class="album-tree-expander"
+            :class="{ expanded: expandedAlbumIds.includes(item.id) || search.trim() }"
+            :title="expandedAlbumIds.includes(item.id) ? 'Collapse' : 'Expand'"
+            @click.stop="toggleExpanded(item.id)"
+          >
+            {{ expandedAlbumIds.includes(item.id) || search.trim() ? '▾' : '▸' }}
+          </button>
+          <span v-else class="album-tree-expander-spacer" aria-hidden="true"></span>
 
-        <div v-if="filteredTreeItems.length === 0" class="album-tree-empty">
+          <button
+            type="button"
+            class="album-tree-option"
+            :class="{ selected: modelValue === item.id }"
+            @click="selectAlbum(item.id)"
+          >
+            <span class="album-tree-option-name">{{ item.name }}</span>
+          </button>
+        </div>
+
+        <div v-if="visibleTreeItems.length === 0" class="album-tree-empty">
           Nothing found
         </div>
       </div>
