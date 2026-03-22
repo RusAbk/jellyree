@@ -275,7 +275,21 @@ const {
   editorPreviewScale,
   cropDrag,
   resetEditorAdjustments,
+  resetToneAdjustments,
+  resetDetailAdjustments,
+  resetColorAdjustments,
+  resetGeometryAdjustments,
+  applyPreset,
 } = useEditorState()
+
+const copiedEditorAdjustments = ref<Record<string, number | boolean> | null>(null)
+const beforeAfterActive = ref(false)
+const clippingOverlayEnabled = ref(false)
+const editorHistogram = ref<number[]>(Array.from({ length: 32 }, () => 0))
+const editorClipStats = reactive({
+  shadows: 0,
+  highlights: 0,
+})
 
 const activeMedia = computed(() => media.value.find((item) => item.id === activeMediaId.value) || null)
 const lightboxActiveImageSrc = computed(() => {
@@ -288,6 +302,11 @@ const lightboxActiveImageSrc = computed(() => {
   return thumbs.value[item.id] || ''
 })
 const activeAlbum = computed(() => albums.value.find((album) => album.id === activeAlbumId.value) || null)
+const activeEditorThumbSrc = computed(() => {
+  const item = activeMedia.value
+  if (!item) return ''
+  return thumbs.value[item.id] || ''
+})
 const isPublicRoute = computed(() => routeMode.value !== 'app')
 
 const albumsByParent = computed(() => {
@@ -4069,6 +4088,148 @@ function lightboxContainStyle(src: string, item: MediaItem) {
 function mediaDetailsStyle(_item?: MediaItem) {
   return {}
 }
+
+function snapshotEditorAdjustments() {
+  return {
+    temperature: editor.temperature,
+    brightness: editor.brightness,
+    contrast: editor.contrast,
+    saturation: editor.saturation,
+    toneDepth: editor.toneDepth,
+    shadowsLevel: editor.shadowsLevel,
+    highlightsLevel: editor.highlightsLevel,
+    sharpness: editor.sharpness,
+    definition: editor.definition,
+    vignette: editor.vignette,
+    glamour: editor.glamour,
+    grayscale: editor.grayscale,
+    sepia: editor.sepia,
+    cropZoom: editor.cropZoom,
+    rotate: editor.rotate,
+    flipX: editor.flipX,
+    flipY: editor.flipY,
+    cropX: editor.cropX,
+    cropY: editor.cropY,
+    cropWidth: editor.cropWidth,
+    cropHeight: editor.cropHeight,
+  }
+}
+
+function applyEditorAdjustmentSnapshot(snapshot: Record<string, number | boolean>) {
+  for (const [key, value] of Object.entries(snapshot)) {
+    ;(editor as unknown as Record<string, number | boolean>)[key] = value
+  }
+}
+
+function copyEditorEdits() {
+  copiedEditorAdjustments.value = snapshotEditorAdjustments()
+  showToast('Edits copied')
+}
+
+function pasteEditorEdits() {
+  if (!copiedEditorAdjustments.value) return
+  applyEditorAdjustmentSnapshot(copiedEditorAdjustments.value)
+  showToast('Edits pasted')
+}
+
+function resetEditorGroup(group: 'tone' | 'detail' | 'color' | 'geometry') {
+  if (group === 'tone') {
+    resetToneAdjustments()
+    showToast('Tone reset')
+    return
+  }
+  if (group === 'detail') {
+    resetDetailAdjustments()
+    showToast('Detail reset')
+    return
+  }
+  if (group === 'color') {
+    resetColorAdjustments()
+    showToast('Color reset')
+    return
+  }
+  resetGeometryAdjustments()
+  showToast('Geometry reset')
+}
+
+function applyEditorPreset(preset: 'auto' | 'portrait' | 'landscape' | 'night' | 'bw') {
+  applyPreset(preset)
+  showToast(`Preset ${preset.toUpperCase()} applied`)
+}
+
+function setBeforeAfterActive(value: boolean) {
+  beforeAfterActive.value = value
+}
+
+function toggleClippingOverlay() {
+  clippingOverlayEnabled.value = !clippingOverlayEnabled.value
+}
+
+async function updateEditorHistogram() {
+  if (!editModeOpen.value || !activeEditorThumbSrc.value) {
+    editorHistogram.value = Array.from({ length: 32 }, () => 0)
+    editorClipStats.shadows = 0
+    editorClipStats.highlights = 0
+    return
+  }
+
+  const source = activeEditorThumbSrc.value
+  await new Promise<void>((resolve) => {
+    const image = new Image()
+    image.decoding = 'async'
+    image.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        const maxSide = 300
+        const ratio = Math.max(1, Math.max(image.naturalWidth, image.naturalHeight) / maxSide)
+        canvas.width = Math.max(1, Math.round(image.naturalWidth / ratio))
+        canvas.height = Math.max(1, Math.round(image.naturalHeight / ratio))
+        const context = canvas.getContext('2d', { willReadFrequently: true })
+        if (!context) {
+          resolve()
+          return
+        }
+
+        context.drawImage(image, 0, 0, canvas.width, canvas.height)
+        const data = context.getImageData(0, 0, canvas.width, canvas.height).data
+        const bins = Array.from({ length: 32 }, () => 0)
+        let shadows = 0
+        let highlights = 0
+        let pixels = 0
+
+        for (let index = 0; index < data.length; index += 4) {
+          const r = data[index] || 0
+          const g = data[index + 1] || 0
+          const b = data[index + 2] || 0
+          const alpha = data[index + 3] || 0
+          if (alpha < 10) continue
+          const luma = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b)
+          const bin = Math.min(31, Math.max(0, Math.floor((luma / 255) * 32)))
+          bins[bin] = (bins[bin] || 0) + 1
+          if (luma <= 8) shadows += 1
+          if (luma >= 247) highlights += 1
+          pixels += 1
+        }
+
+        const maxBin = Math.max(1, ...bins)
+        editorHistogram.value = bins.map((count) => count / maxBin)
+        if (pixels > 0) {
+          editorClipStats.shadows = (shadows / pixels) * 100
+          editorClipStats.highlights = (highlights / pixels) * 100
+        } else {
+          editorClipStats.shadows = 0
+          editorClipStats.highlights = 0
+        }
+      } catch {
+        // Ignore histogram parsing errors to avoid breaking editor UX.
+      }
+      resolve()
+    }
+    image.onerror = () => resolve()
+    image.src = source
+  })
+}
+
 function onKeyDown(event: KeyboardEvent) {
   if (event.key === 'Escape' && mobileUserMenuOpen.value) {
     closeMobileUserMenu()
@@ -4086,6 +4247,11 @@ function onKeyDown(event: KeyboardEvent) {
   }
 
   if (editModeOpen.value) {
+    if (event.code === 'Space') {
+      beforeAfterActive.value = true
+      event.preventDefault()
+      return
+    }
     if (event.key === 'Escape') closeEditMode()
     return
   }
@@ -4101,6 +4267,13 @@ function onKeyDown(event: KeyboardEvent) {
   if (event.key === '+' || event.key === '=') zoomInLightbox()
   if (event.key === '-') zoomOutLightbox()
   if (event.key === '0') resetLightboxZoom()
+}
+
+function onKeyUp(event: KeyboardEvent) {
+  if (!editModeOpen.value) return
+  if (event.code === 'Space') {
+    beforeAfterActive.value = false
+  }
 }
 
 async function submitAuth() {
@@ -4238,6 +4411,44 @@ watch(
   },
 )
 
+watch(editModeOpen, (isOpen) => {
+  if (!isOpen) {
+    beforeAfterActive.value = false
+    clippingOverlayEnabled.value = false
+  }
+  void updateEditorHistogram()
+})
+
+watch(
+  () => activeEditorThumbSrc.value,
+  () => {
+    void updateEditorHistogram()
+  },
+)
+
+watch(
+  () => [
+    editor.temperature,
+    editor.brightness,
+    editor.contrast,
+    editor.saturation,
+    editor.toneDepth,
+    editor.shadowsLevel,
+    editor.highlightsLevel,
+    editor.sharpness,
+    editor.definition,
+    editor.vignette,
+    editor.glamour,
+    editor.grayscale,
+    editor.sepia,
+    editor.cropZoom,
+    editor.rotate,
+  ],
+  () => {
+    void updateEditorHistogram()
+  },
+)
+
 watch(filteredMedia, (items) => {
   const allowed = new Set(items.map((item) => item.id))
   selectedMediaIds.value = selectedMediaIds.value.filter((id) => allowed.has(id))
@@ -4312,6 +4523,7 @@ onMounted(async () => {
 
   window.addEventListener('popstate', popStateHandler)
   window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('keyup', onKeyUp)
   window.addEventListener('pointerup', stopCropDrag)
   window.addEventListener('pointermove', onWindowPointerMove)
   window.addEventListener('pointerup', onWindowPointerUp)
@@ -4340,6 +4552,7 @@ onBeforeUnmount(() => {
     popStateHandler = null
   }
   window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('keyup', onKeyUp)
   window.removeEventListener('pointerup', stopCropDrag)
   window.removeEventListener('pointermove', onWindowPointerMove)
   window.removeEventListener('pointerup', onWindowPointerUp)
@@ -5590,6 +5803,11 @@ onBeforeUnmount(() => {
         :editor-filter-style="mediaFilterStyleFromEditor()"
         :saving="saving"
         :undo-count="undoCount"
+        :can-paste-edits="Boolean(copiedEditorAdjustments)"
+        :before-after-active="beforeAfterActive"
+        :clipping-overlay-enabled="clippingOverlayEnabled"
+        :histogram="editorHistogram"
+        :clipping-stats="editorClipStats"
         @update:editor-preview-scale="editorPreviewScale = $event"
         @update:active-editor-mobile-tab="activeEditorMobileTab = $event"
         @close="closeEditMode"
@@ -5597,8 +5815,14 @@ onBeforeUnmount(() => {
         @stop-crop="stopCropDrag"
         @start-crop="startCropDrag"
         @reset="resetEditorAdjustments"
+        @reset-group="resetEditorGroup"
         @undo="undoLastPermanentEdit"
         @apply="applyImageEditsPermanently"
+        @apply-preset="applyEditorPreset"
+        @copy-edits="copyEditorEdits"
+        @paste-edits="pasteEditorEdits"
+        @set-before-after-active="setBeforeAfterActive"
+        @toggle-clipping-overlay="toggleClippingOverlay"
       />
 
       <div v-if="accountPageOpen" class="account-page" @click.self="closeAccountPage">

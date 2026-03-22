@@ -61,6 +61,76 @@ export type CropDragState = {
   originHeight: number
 }
 
+export type EditorPreset = 'auto' | 'portrait' | 'landscape' | 'night' | 'bw'
+
+type EditorAdjustmentSnapshot = {
+  temperature: number
+  brightness: number
+  contrast: number
+  saturation: number
+  toneDepth: number
+  shadowsLevel: number
+  highlightsLevel: number
+  sharpness: number
+  definition: number
+  vignette: number
+  glamour: number
+  grayscale: number
+  sepia: number
+  cropZoom: number
+  rotate: number
+  flipX: boolean
+  flipY: boolean
+  cropX: number
+  cropY: number
+  cropWidth: number
+  cropHeight: number
+}
+
+const PRESET_VALUES: Record<EditorPreset, Partial<EditorAdjustmentSnapshot>> = {
+  auto: {
+    brightness: 8,
+    contrast: 10,
+    saturation: 6,
+    toneDepth: 8,
+    sharpness: 10,
+    definition: 10,
+  },
+  portrait: {
+    temperature: 10,
+    brightness: 6,
+    saturation: 4,
+    highlightsLevel: 12,
+    glamour: 10,
+    sharpness: 6,
+  },
+  landscape: {
+    contrast: 12,
+    saturation: 14,
+    toneDepth: 12,
+    sharpness: 12,
+    definition: 16,
+    vignette: 4,
+  },
+  night: {
+    brightness: 14,
+    shadowsLevel: 22,
+    highlightsLevel: -8,
+    toneDepth: -8,
+    definition: 8,
+    sharpness: 8,
+    saturation: 6,
+  },
+  bw: {
+    grayscale: 100,
+    contrast: 14,
+    toneDepth: 10,
+    sharpness: 12,
+    definition: 10,
+    saturation: -50,
+  },
+}
+
 export function createDefaultEditorState(): EditorState {
   return {
     filename: '',
@@ -155,6 +225,46 @@ export function useEditorState() {
     editor.cropHeight = 100
   }
 
+  function resetToneAdjustments() {
+    editor.brightness = 0
+    editor.contrast = 0
+    editor.toneDepth = 0
+    editor.shadowsLevel = 0
+    editor.highlightsLevel = 0
+  }
+
+  function resetDetailAdjustments() {
+    editor.sharpness = 0
+    editor.definition = 0
+    editor.glamour = 0
+    editor.vignette = 0
+  }
+
+  function resetColorAdjustments() {
+    editor.temperature = 0
+    editor.saturation = 0
+    editor.grayscale = 0
+    editor.sepia = 0
+  }
+
+  function resetGeometryAdjustments() {
+    editor.cropZoom = 0
+    editor.rotate = 0
+    editor.flipX = false
+    editor.flipY = false
+    editor.cropX = 0
+    editor.cropY = 0
+    editor.cropWidth = 100
+    editor.cropHeight = 100
+  }
+
+  function applyPreset(preset: EditorPreset) {
+    const values = PRESET_VALUES[preset]
+    for (const [key, value] of Object.entries(values)) {
+      ;(editor as unknown as Record<string, unknown>)[key] = value
+    }
+  }
+
   return {
     editModeOpen,
     editor,
@@ -163,5 +273,10 @@ export function useEditorState() {
     editorPreviewScale,
     cropDrag,
     resetEditorAdjustments,
+    resetToneAdjustments,
+    resetDetailAdjustments,
+    resetColorAdjustments,
+    resetGeometryAdjustments,
+    applyPreset,
   }
 }

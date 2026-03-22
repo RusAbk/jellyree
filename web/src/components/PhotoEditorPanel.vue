@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount } from 'vue'
 import type { MediaItem } from '../api'
 import type { CropDragMode, EditorMobileTab, EditorState } from '../composables/useEditorState'
 
@@ -17,6 +17,14 @@ const props = defineProps<{
   editorFilterStyle: Record<string, string | number>
   saving: boolean
   undoCount: number
+  canPasteEdits: boolean
+  beforeAfterActive: boolean
+  clippingOverlayEnabled: boolean
+  histogram: number[]
+  clippingStats: {
+    shadows: number
+    highlights: number
+  }
 }>()
 
 const emit = defineEmits<{
@@ -27,8 +35,14 @@ const emit = defineEmits<{
   (e: 'stopCrop'): void
   (e: 'startCrop', event: PointerEvent, mode: CropDragMode): void
   (e: 'reset'): void
+  (e: 'resetGroup', group: 'tone' | 'detail' | 'color' | 'geometry'): void
   (e: 'undo'): void
   (e: 'apply'): void
+  (e: 'applyPreset', preset: 'auto' | 'portrait' | 'landscape' | 'night' | 'bw'): void
+  (e: 'copyEdits'): void
+  (e: 'pasteEdits'): void
+  (e: 'setBeforeAfterActive', value: boolean): void
+  (e: 'toggleClippingOverlay'): void
 }>()
 
 const previewScaleModel = computed({
@@ -44,6 +58,43 @@ const activeTabModel = computed({
 function onStartCrop(event: PointerEvent, mode: CropDragMode) {
   emit('startCrop', event, mode)
 }
+
+let beforeAfterTouchTimer: ReturnType<typeof setTimeout> | null = null
+
+function onPreviewPointerDown(event: PointerEvent) {
+  if (event.pointerType !== 'touch') return
+  if (beforeAfterTouchTimer) {
+    clearTimeout(beforeAfterTouchTimer)
+    beforeAfterTouchTimer = null
+  }
+  beforeAfterTouchTimer = setTimeout(() => {
+    emit('setBeforeAfterActive', true)
+    beforeAfterTouchTimer = null
+  }, 260)
+}
+
+function onPreviewPointerUpOrCancel() {
+  if (beforeAfterTouchTimer) {
+    clearTimeout(beforeAfterTouchTimer)
+    beforeAfterTouchTimer = null
+  }
+  emit('setBeforeAfterActive', false)
+}
+
+function onBeforeAfterMouseDown() {
+  emit('setBeforeAfterActive', true)
+}
+
+function onBeforeAfterMouseUp() {
+  emit('setBeforeAfterActive', false)
+}
+
+onBeforeUnmount(() => {
+  if (beforeAfterTouchTimer) {
+    clearTimeout(beforeAfterTouchTimer)
+    beforeAfterTouchTimer = null
+  }
+})
 </script>
 
 <template>
@@ -62,18 +113,30 @@ function onStartCrop(event: PointerEvent, mode: CropDragMode) {
           <div
             v-if="thumbSrc && canPreview"
             class="editor-crop-stage"
+            @pointerdown="onPreviewPointerDown"
             @pointermove="emit('cropMove', $event)"
             @pointerup="emit('stopCrop')"
             @pointercancel="emit('stopCrop')"
             @pointerleave="emit('stopCrop')"
+            @pointerup.capture="onPreviewPointerUpOrCancel"
+            @pointercancel.capture="onPreviewPointerUpOrCancel"
+            @pointerleave.capture="onPreviewPointerUpOrCancel"
           >
             <div class="editor-image-frame" :style="editorPreviewFrameStyle">
               <img
                 class="overlay-image editor-image"
                 :src="thumbSrc"
                 :alt="activeMedia.filename"
-                :style="editorFilterStyle"
+                :style="beforeAfterActive ? {} : editorFilterStyle"
               />
+              <div
+                v-if="clippingOverlayEnabled"
+                class="editor-clipping-overlay"
+                :style="{
+                  '--highlight-opacity': String(Math.min(0.7, clippingStats.highlights / 32)),
+                  '--shadow-opacity': String(Math.min(0.7, clippingStats.shadows / 32)),
+                }"
+              ></div>
               <div class="crop-rect" :style="editorCropRectStyle" @pointerdown="onStartCrop($event, 'move')">
                 <span class="crop-grid v1"></span>
                 <span class="crop-grid v2"></span>
@@ -95,6 +158,58 @@ function onStartCrop(event: PointerEvent, mode: CropDragMode) {
       </div>
 
       <aside class="editor-sidebar">
+        <div class="editor-toolbar-groups">
+          <div class="editor-presets">
+            <span class="editor-toolbar-label">Presets</span>
+            <div class="editor-chip-row">
+              <button class="chip" type="button" @click="emit('applyPreset', 'auto')">Auto</button>
+              <button class="chip" type="button" @click="emit('applyPreset', 'portrait')">Portrait</button>
+              <button class="chip" type="button" @click="emit('applyPreset', 'landscape')">Landscape</button>
+              <button class="chip" type="button" @click="emit('applyPreset', 'night')">Night</button>
+              <button class="chip" type="button" @click="emit('applyPreset', 'bw')">BW</button>
+            </div>
+          </div>
+
+          <div class="editor-presets">
+            <span class="editor-toolbar-label">Editing tools</span>
+            <div class="editor-chip-row">
+              <button class="chip" type="button" @mousedown="onBeforeAfterMouseDown" @mouseup="onBeforeAfterMouseUp" @mouseleave="onBeforeAfterMouseUp" @touchstart.prevent="emit('setBeforeAfterActive', true)" @touchend.prevent="emit('setBeforeAfterActive', false)">
+                Before/After
+              </button>
+              <button class="chip" type="button" @click="emit('copyEdits')">Copy edits</button>
+              <button class="chip" type="button" :disabled="!canPasteEdits" @click="emit('pasteEdits')">Paste edits</button>
+              <button class="chip" type="button" :class="{ active: clippingOverlayEnabled }" @click="emit('toggleClippingOverlay')">
+                Clipping overlay
+              </button>
+            </div>
+          </div>
+
+          <div class="editor-histogram">
+            <div class="editor-histogram-head">
+              <span class="editor-toolbar-label">Histogram</span>
+              <span class="muted">Shadows {{ clippingStats.shadows.toFixed(1) }}% · Highlights {{ clippingStats.highlights.toFixed(1) }}%</span>
+            </div>
+            <div class="editor-histogram-bars" role="img" aria-label="Image histogram">
+              <span
+                v-for="(bin, index) in histogram"
+                :key="`hist-${index}`"
+                class="editor-histogram-bin"
+                :style="{ height: `${Math.max(4, Math.min(100, bin * 100))}%` }"
+              ></span>
+            </div>
+          </div>
+
+          <div class="editor-presets">
+            <span class="editor-toolbar-label">Reset groups</span>
+            <div class="editor-chip-row">
+              <button class="chip" type="button" @click="emit('resetGroup', 'tone')">Tone</button>
+              <button class="chip" type="button" @click="emit('resetGroup', 'detail')">Detail</button>
+              <button class="chip" type="button" @click="emit('resetGroup', 'color')">Color</button>
+              <button class="chip" type="button" @click="emit('resetGroup', 'geometry')">Geometry</button>
+            </div>
+          </div>
+        </div>
+
         <div class="editor-controls">
           <div class="slider-row"><span>Preview scale</span><input v-model="previewScaleModel" type="range" min="25" max="300" /></div>
           <div class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
@@ -172,6 +287,18 @@ function onStartCrop(event: PointerEvent, mode: CropDragMode) {
       </div>
 
       <div class="editor-actions editor-actions-mobile">
+        <button class="btn ghost" aria-label="Apply auto preset" title="Auto preset" @click="emit('applyPreset', 'auto')">
+          <i class="ri-magic-line" aria-hidden="true"></i>
+        </button>
+        <button class="btn ghost" aria-label="Copy edits" title="Copy" @click="emit('copyEdits')">
+          <i class="ri-file-copy-line" aria-hidden="true"></i>
+        </button>
+        <button class="btn ghost" aria-label="Paste edits" title="Paste" :disabled="!canPasteEdits" @click="emit('pasteEdits')">
+          <i class="ri-clipboard-line" aria-hidden="true"></i>
+        </button>
+        <button class="btn ghost" aria-label="Before after" title="Before/After" @touchstart.prevent="emit('setBeforeAfterActive', true)" @touchend.prevent="emit('setBeforeAfterActive', false)">
+          <i class="ri-contrast-line" aria-hidden="true"></i>
+        </button>
         <button class="btn ghost" aria-label="Reset adjustments" title="Reset" @click="emit('reset')">
           <i class="ri-refresh-line" aria-hidden="true"></i>
         </button>
