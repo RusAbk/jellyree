@@ -1651,16 +1651,10 @@ export class MediaController {
       await tx.media.delete({ where: { id } });
     });
 
-    await this.deleteObjectFromR2(req.user!.id, media.filePath).catch(() => {
-      return;
-    });
+    await this.deleteObjectFromR2(req.user!.id, media.filePath);
 
     await Promise.all(
-      revisions.map((entry) =>
-        this.deleteObjectFromR2(req.user!.id, entry.filePath).catch(() => {
-          return;
-        }),
-      ),
+      revisions.map((entry) => this.deleteObjectFromR2(req.user!.id, entry.filePath)),
     );
 
     return { ok: true };
@@ -1812,20 +1806,10 @@ export class MediaController {
       await tx.media.deleteMany({ where: { id: { in: ownedIds } } });
     });
 
-    await Promise.all(
-      ownedMedia.map((item) =>
-        this.deleteObjectFromR2(req.user!.id, item.filePath).catch(() => {
-          return;
-        }),
-      ),
-    );
+    await Promise.all(ownedMedia.map((item) => this.deleteObjectFromR2(req.user!.id, item.filePath)));
 
     await Promise.all(
-      revisions.map((entry) =>
-        this.deleteObjectFromR2(req.user!.id, entry.filePath).catch(() => {
-          return;
-        }),
-      ),
+      revisions.map((entry) => this.deleteObjectFromR2(req.user!.id, entry.filePath)),
     );
 
     return { ok: true, deleted: ownedIds.length };
