@@ -423,6 +423,35 @@ export class MediaController {
     const offset = Math.max(pageNumber - 1, 0) * pageSize;
     const favoriteOnly = favorite === 'true';
 
+    let albumScopeIds: string[] | null = null;
+    if (albumId) {
+      const ownerAlbums = await this.prisma.album.findMany({
+        where: { ownerId: req.user!.id },
+        select: { id: true, parentId: true },
+      });
+
+      const childrenByParent = new Map<string | null, string[]>();
+      ownerAlbums.forEach((album) => {
+        const key = album.parentId ?? null;
+        const bucket = childrenByParent.get(key) ?? [];
+        bucket.push(album.id);
+        childrenByParent.set(key, bucket);
+      });
+
+      const scoped = new Set<string>();
+      const queue: string[] = [albumId];
+
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        if (scoped.has(current)) continue;
+        scoped.add(current);
+        const children = childrenByParent.get(current) ?? [];
+        children.forEach((childId) => queue.push(childId));
+      }
+
+      albumScopeIds = Array.from(scoped);
+    }
+
     const where: Prisma.MediaWhereInput = {
       ownerId: req.user!.id,
       ...(favoriteOnly ? { isFavorite: true } : {}),
@@ -456,7 +485,11 @@ export class MediaController {
       ...(albumId
         ? {
             albumMedia: {
-              some: { albumId },
+              some: {
+                albumId: {
+                  in: albumScopeIds ?? [albumId],
+                },
+              },
             },
           }
         : {}),
