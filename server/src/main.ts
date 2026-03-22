@@ -3,17 +3,31 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { json, urlencoded } from 'express';
 
-function parseCorsOrigins(raw: string | undefined) {
+function normalizeOrigin(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  // Accept full URLs in env and normalize to scheme + host (+port),
+  // because browser Origin header never includes path/query/fragment.
+  try {
+    const url = new URL(trimmed);
+    return url.origin.toLowerCase();
+  } catch {
+    return trimmed.replace(/\/+$/, '').toLowerCase();
+  }
+}
+
+function parseCorsOrigins(raw: string | undefined): true | Set<string> {
   if (!raw || raw.trim() === '' || raw.trim() === '*') {
     return true;
   }
 
   const origins = raw
     .split(',')
-    .map((origin) => origin.trim())
+    .map((origin) => normalizeOrigin(origin))
     .filter(Boolean);
 
-  return origins.length > 0 ? origins : true;
+  return origins.length > 0 ? new Set(origins) : true;
 }
 
 async function bootstrap() {
@@ -24,8 +38,30 @@ async function bootstrap() {
   const corsCredentials = (process.env.CORS_CREDENTIALS || 'true').toLowerCase() !== 'false';
 
   app.enableCors({
-    origin: corsOrigins,
+    origin: (incomingOrigin, callback) => {
+      // Allow non-browser requests with no Origin header.
+      if (!incomingOrigin) {
+        callback(null, true);
+        return;
+      }
+
+      if (corsOrigins === true) {
+        callback(null, true);
+        return;
+      }
+
+      const normalizedIncomingOrigin = normalizeOrigin(incomingOrigin);
+      if (corsOrigins.has(normalizedIncomingOrigin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`Origin ${incomingOrigin} is not allowed by CORS`), false);
+    },
     credentials: corsCredentials,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    optionsSuccessStatus: 204,
   });
   await app.listen(process.env.PORT ?? 3000);
 

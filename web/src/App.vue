@@ -2,6 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api, type AccountStats, type AdminUserOverview, type Album, type MediaItem, type MeProfile, type Tag } from './api'
 import AlbumTreeSelect from './components/AlbumTreeSelect.vue'
+import PhotoEditorPanel from './components/PhotoEditorPanel.vue'
+import { useEditorActions } from './composables/useEditorActions'
+import { useEditorPreview } from './composables/useEditorPreview'
+import { useEditorState } from './composables/useEditorState'
 
 type AlbumTreeNode = {
   album: Album
@@ -112,7 +116,6 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const lightboxStripRef = ref<HTMLDivElement | null>(null)
 const lightboxMediaStageRef = ref<HTMLDivElement | null>(null)
 const lightboxOpen = ref(false)
-const editModeOpen = ref(false)
 const createAlbumName = ref('')
 const createAlbumBusy = ref(false)
 const fabMenuOpen = ref(false)
@@ -133,7 +136,6 @@ const expandedAlbumIds = ref<string[]>(
 )
 const targetAlbumId = ref('')
 const bulkTargetAlbumId = ref('')
-const editorCropStage = ref<HTMLDivElement | null>(null)
 const galleryMainRef = ref<HTMLElement | null>(null)
 const masonryRef = ref<HTMLElement | null>(null)
 const tagsInputRef = ref<HTMLInputElement | null>(null)
@@ -265,85 +267,15 @@ const thumbQueue = {
   waiters: [] as Array<() => void>,
 }
 
-const editor = reactive({
-  filename: '',
-  tagsInput: '',
-  metadataCreatedAtInput: '',
-  metadataModifiedAtInput: '',
-  locationInput: '',
-  temperature: 0,
-  brightness: 0,
-  contrast: 0,
-  saturation: 0,
-  toneDepth: 0,
-  shadowsLevel: 0,
-  highlightsLevel: 0,
-  sharpness: 0,
-  definition: 0,
-  vignette: 0,
-  glamour: 0,
-  grayscale: 0,
-  sepia: 0,
-  cropZoom: 0,
-  rotate: 0,
-  flipX: false,
-  flipY: false,
-  cropX: 0,
-  cropY: 0,
-  cropWidth: 100,
-  cropHeight: 100,
-})
-
-type EditorMobileTab =
-  | 'previewScale'
-  | 'temperature'
-  | 'brightness'
-  | 'contrast'
-  | 'saturation'
-  | 'toneDepth'
-  | 'shadowsLevel'
-  | 'highlightsLevel'
-  | 'sharpness'
-  | 'definition'
-  | 'vignette'
-  | 'glamour'
-  | 'grayscale'
-  | 'sepia'
-  | 'cropZoom'
-  | 'rotate'
-  | 'mirror'
-
-const activeEditorMobileTab = ref<EditorMobileTab>('temperature')
-const editorMobileTabs: Array<{ key: EditorMobileTab; label: string }> = [
-  { key: 'previewScale', label: 'Scale' },
-  { key: 'temperature', label: 'Temp' },
-  { key: 'brightness', label: 'Bright' },
-  { key: 'contrast', label: 'Contrast' },
-  { key: 'saturation', label: 'Sat' },
-  { key: 'toneDepth', label: 'Depth' },
-  { key: 'shadowsLevel', label: 'Shadows' },
-  { key: 'highlightsLevel', label: 'Highlights' },
-  { key: 'sharpness', label: 'Sharp' },
-  { key: 'definition', label: 'Def' },
-  { key: 'vignette', label: 'Vignette' },
-  { key: 'glamour', label: 'Glamour' },
-  { key: 'grayscale', label: 'Gray' },
-  { key: 'sepia', label: 'Sepia' },
-  { key: 'cropZoom', label: 'Zoom' },
-  { key: 'rotate', label: 'Rotate' },
-  { key: 'mirror', label: 'Mirror' },
-]
-
-const cropDrag = reactive({
-  active: false,
-  mode: 'move' as 'move' | 'n' | 's' | 'w' | 'e' | 'nw' | 'ne' | 'sw' | 'se',
-  startX: 0,
-  startY: 0,
-  originX: 0,
-  originY: 0,
-  originWidth: 100,
-  originHeight: 100,
-})
+const {
+  editModeOpen,
+  editor,
+  activeEditorMobileTab,
+  editorMobileTabs,
+  editorPreviewScale,
+  cropDrag,
+  resetEditorAdjustments,
+} = useEditorState()
 
 const activeMedia = computed(() => media.value.find((item) => item.id === activeMediaId.value) || null)
 const lightboxActiveImageSrc = computed(() => {
@@ -665,18 +597,45 @@ const marqueeStyle = computed(() => {
   }
 })
 
-const editorCropRectStyle = computed(() => ({
-  left: `${editor.cropX}%`,
-  top: `${editor.cropY}%`,
-  width: `${editor.cropWidth}%`,
-  height: `${editor.cropHeight}%`,
-}))
+const {
+  editorCropRectStyle,
+  editorPreviewFrameStyle,
+  mediaFilterStyleFromEditor,
+  syncCropRectWithRotation,
+  startCropDrag,
+  stopCropDrag,
+  onCropPointerMove,
+} = useEditorPreview({
+  editor,
+  editorPreviewScale,
+  cropDrag,
+  activeMedia,
+})
 
-const editorPreviewScale = ref(100)
-const editorPreviewFrameStyle = computed(() => ({
-  transform: `scale(${editorPreviewScale.value / 100})`,
-  transformOrigin: 'top left',
-}))
+const {
+  openEditMode,
+  closeEditMode,
+  applyImageEditsPermanently,
+  undoLastPermanentEdit,
+} = useEditorActions({
+  token,
+  activeMedia,
+  saving,
+  message,
+  mobileDetailsOpen,
+  editModeOpen,
+  editorPreviewScale,
+  activeEditorMobileTab,
+  editor,
+  selectMedia,
+  closeContextMenus,
+  loadAll,
+  clearThumb,
+  clearLightboxFullImage,
+  loadThumb,
+  applyEditsRequest: (authToken, mediaId, adjustments) => api.applyMediaEdits(authToken, mediaId, adjustments),
+  revertEditsRequest: (authToken, mediaId) => api.revertMediaEdits(authToken, mediaId),
+})
 
 const mediaDensitySteps: Array<'s' | 'm' | 'l'> = ['s', 'm', 'l']
 const virtualWindowState = reactive({
@@ -3078,22 +3037,6 @@ function onLightboxTouchCancel() {
   resetLightboxSwipe()
 }
 
-function openEditMode(mediaId?: string) {
-  if (mediaId) {
-    selectMedia(mediaId)
-  }
-  if (!activeMedia.value) return
-  editorPreviewScale.value = 100
-  mobileDetailsOpen.value = false
-  activeEditorMobileTab.value = 'temperature'
-  editModeOpen.value = true
-  closeContextMenus()
-}
-
-function closeEditMode() {
-  editModeOpen.value = false
-}
-
 function setActiveMediaByIndex(index: number) {
   if (lightboxItems.value.length === 0) return
   const normalized = (index + lightboxItems.value.length) % lightboxItems.value.length
@@ -4110,68 +4053,6 @@ async function copyLinkFromShareDialog() {
   showToast('Public link copied')
 }
 
-async function applyImageEditsPermanently() {
-  if (!activeMedia.value || !token.value) return
-  saving.value = true
-
-  try {
-    const mediaId = activeMedia.value.id
-    await api.applyMediaEdits(authHeaders(), mediaId, {
-      temperature: editor.temperature,
-      brightness: editor.brightness,
-      contrast: editor.contrast,
-      saturation: editor.saturation,
-      toneDepth: editor.toneDepth,
-      shadowsLevel: editor.shadowsLevel,
-      highlightsLevel: editor.highlightsLevel,
-      sharpness: editor.sharpness,
-      definition: editor.definition,
-      vignette: editor.vignette,
-      glamour: editor.glamour,
-      grayscale: editor.grayscale,
-      sepia: editor.sepia,
-      cropZoom: editor.cropZoom,
-      rotate: editor.rotate,
-      flipX: editor.flipX ? 1 : 0,
-      flipY: editor.flipY ? 1 : 0,
-      cropX: editor.cropX,
-      cropY: editor.cropY,
-      cropWidth: editor.cropWidth,
-      cropHeight: editor.cropHeight,
-    })
-    await loadAll()
-    clearThumb(mediaId)
-    clearLightboxFullImage(mediaId)
-    await loadThumb(mediaId)
-    message.value = 'Edits permanently applied'
-    closeEditMode()
-  } catch (error) {
-    message.value = (error as Error).message
-  } finally {
-    saving.value = false
-  }
-}
-
-async function undoLastPermanentEdit() {
-  if (!activeMedia.value || !token.value) return
-  saving.value = true
-
-  try {
-    const mediaId = activeMedia.value.id
-    await api.revertMediaEdits(authHeaders(), mediaId)
-    await loadAll()
-    clearThumb(mediaId)
-    clearLightboxFullImage(mediaId)
-    await loadThumb(mediaId)
-    message.value = 'Last permanent edit was undone'
-    closeEditMode()
-  } catch (error) {
-    message.value = (error as Error).message
-  } finally {
-    saving.value = false
-  }
-}
-
 function mediaFilterStyle(_item?: MediaItem) {
   return {}
 }
@@ -4185,209 +4066,9 @@ function lightboxContainStyle(src: string, item: MediaItem) {
   }
 }
 
-function mediaFilterStyleFromEditor() {
-  const temperature = Number(editor.temperature || 0)
-  const brightness = 100 + Number(editor.brightness || 0)
-  const contrast = 100 + Number(editor.contrast || 0)
-  const saturation = 100 + Number(editor.saturation || 0)
-  const toneDepth = Number(editor.toneDepth || 0)
-  const shadowsLevel = Number(editor.shadowsLevel || 0)
-  const highlightsLevel = Number(editor.highlightsLevel || 0)
-  const sharpness = Number(editor.sharpness || 0)
-  const definition = Number(editor.definition || 0)
-  const glamour = Number(editor.glamour || 0)
-  const zoom = 1 + Number(editor.cropZoom || 0) / 100
-  const rotate = Number(editor.rotate || 0)
-  const flipX = editor.flipX ? -1 : 1
-  const flipY = editor.flipY ? -1 : 1
-  const grayscale = Number(editor.grayscale || 0)
-  const sepia = Number(editor.sepia || 0)
-  const warmTint = Math.max(0, temperature / 100)
-  const coolTint = Math.max(0, -temperature / 100)
-  const depthContrast = toneDepth / 2.2
-  const liftedBrightness = shadowsLevel / 2.4
-  const reducedHighlights = -highlightsLevel / 2.6
-  const glamourBlur = Math.max(0, glamour / 35)
-  const definitionContrast = definition / 3
-  const detailContrast = sharpness / 2.8
-  const finalContrast = contrast + depthContrast + definitionContrast + detailContrast
-  const finalBrightness = brightness + liftedBrightness + reducedHighlights
-  const finalSaturation = saturation + warmTint * 6 - coolTint * 4
-  const finalSepia = Math.max(0, sepia + warmTint * 10)
-
-  const normalizedRotate = ((Math.round(rotate / 90) * 90) % 360 + 360) % 360
-  const isQuarterTurn = normalizedRotate === 90 || normalizedRotate === 270
-  let frameFitScale = 1
-
-  if (isQuarterTurn && activeMedia.value?.width && activeMedia.value?.height) {
-    const width = Math.max(1, activeMedia.value.width)
-    const height = Math.max(1, activeMedia.value.height)
-    frameFitScale = Math.min(width / height, height / width)
-  }
-
-  return {
-    filter: `brightness(${finalBrightness}%) contrast(${finalContrast}%) saturate(${finalSaturation}%) grayscale(${grayscale}%) sepia(${finalSepia}%) hue-rotate(${temperature * 0.25}deg) blur(${glamourBlur}px)`,
-    transform: `scale(${zoom * frameFitScale}) rotate(${rotate}deg) scaleX(${flipX}) scaleY(${flipY})`,
-    clipPath: `inset(${editor.cropY}% ${100 - editor.cropX - editor.cropWidth}% ${100 - editor.cropY - editor.cropHeight}% ${editor.cropX}%)`,
-  }
-}
-
 function mediaDetailsStyle(_item?: MediaItem) {
   return {}
 }
-
-function resetEditorAdjustments() {
-  editor.temperature = 0
-  editor.brightness = 0
-  editor.contrast = 0
-  editor.saturation = 0
-  editor.toneDepth = 0
-  editor.shadowsLevel = 0
-  editor.highlightsLevel = 0
-  editor.sharpness = 0
-  editor.definition = 0
-  editor.vignette = 0
-  editor.glamour = 0
-  editor.grayscale = 0
-  editor.sepia = 0
-  editor.cropZoom = 0
-  editor.rotate = 0
-  editor.flipX = false
-  editor.flipY = false
-  editor.cropX = 0
-  editor.cropY = 0
-  editor.cropWidth = 100
-  editor.cropHeight = 100
-}
-
-function startCropDrag(event: PointerEvent, mode: 'move' | 'n' | 's' | 'w' | 'e' | 'nw' | 'ne' | 'sw' | 'se') {
-  event.preventDefault()
-  event.stopPropagation()
-
-  const target = event.currentTarget as HTMLElement | null
-  if (target && typeof target.setPointerCapture === 'function') {
-    try {
-      target.setPointerCapture(event.pointerId)
-    } catch {
-      // ignore when capture is unavailable for this pointer
-    }
-  }
-
-  cropDrag.active = true
-  cropDrag.mode = mode
-  cropDrag.startX = event.clientX
-  cropDrag.startY = event.clientY
-  cropDrag.originX = editor.cropX
-  cropDrag.originY = editor.cropY
-  cropDrag.originWidth = editor.cropWidth
-  cropDrag.originHeight = editor.cropHeight
-}
-
-function stopCropDrag() {
-  cropDrag.active = false
-}
-
-function clampCropRect() {
-  editor.cropWidth = Math.max(5, Math.min(100, editor.cropWidth))
-  editor.cropHeight = Math.max(5, Math.min(100, editor.cropHeight))
-  editor.cropX = Math.max(0, Math.min(100 - editor.cropWidth, editor.cropX))
-  editor.cropY = Math.max(0, Math.min(100 - editor.cropHeight, editor.cropY))
-}
-
-function rotateCropRectClockwise() {
-  const prevX = editor.cropX
-  const prevY = editor.cropY
-  const prevWidth = editor.cropWidth
-  const prevHeight = editor.cropHeight
-
-  editor.cropX = 100 - (prevY + prevHeight)
-  editor.cropY = prevX
-  editor.cropWidth = prevHeight
-  editor.cropHeight = prevWidth
-  clampCropRect()
-}
-
-function rotateCropRectCounterClockwise() {
-  const prevX = editor.cropX
-  const prevY = editor.cropY
-  const prevWidth = editor.cropWidth
-  const prevHeight = editor.cropHeight
-
-  editor.cropX = prevY
-  editor.cropY = 100 - (prevX + prevWidth)
-  editor.cropWidth = prevHeight
-  editor.cropHeight = prevWidth
-  clampCropRect()
-}
-
-function syncCropRectWithRotation(previousAngle: number, nextAngle: number) {
-  const isQuarterTurn = (value: number) => Math.abs(value % 90) < 0.0001
-  if (!isQuarterTurn(previousAngle) || !isQuarterTurn(nextAngle)) return
-
-  const prevQuarter = Math.round(previousAngle / 90)
-  const nextQuarter = Math.round(nextAngle / 90)
-  if (prevQuarter === nextQuarter) return
-
-  const steps = nextQuarter - prevQuarter
-  const clockwise = steps > 0
-  for (let index = 0; index < Math.abs(steps); index += 1) {
-    if (clockwise) {
-      rotateCropRectClockwise()
-    } else {
-      rotateCropRectCounterClockwise()
-    }
-  }
-}
-
-function onCropPointerMove(event: PointerEvent) {
-  if (!cropDrag.active || !editorCropStage.value) return
-  const rect = editorCropStage.value.getBoundingClientRect()
-  if (!rect.width || !rect.height) return
-
-  const dx = ((event.clientX - cropDrag.startX) / rect.width) * 100
-  const dy = ((event.clientY - cropDrag.startY) / rect.height) * 100
-  const minSize = 5
-
-  let x = cropDrag.originX
-  let y = cropDrag.originY
-  let width = cropDrag.originWidth
-  let height = cropDrag.originHeight
-
-  if (cropDrag.mode === 'move') {
-    x = cropDrag.originX + dx
-    y = cropDrag.originY + dy
-  }
-  if (cropDrag.mode.includes('e')) {
-    width = cropDrag.originWidth + dx
-  }
-  if (cropDrag.mode.includes('s')) {
-    height = cropDrag.originHeight + dy
-  }
-  if (cropDrag.mode.includes('w')) {
-    x = cropDrag.originX + dx
-    width = cropDrag.originWidth - dx
-  }
-  if (cropDrag.mode.includes('n')) {
-    y = cropDrag.originY + dy
-    height = cropDrag.originHeight - dy
-  }
-
-  if (width < minSize) {
-    if (cropDrag.mode.includes('w')) x -= minSize - width
-    width = minSize
-  }
-  if (height < minSize) {
-    if (cropDrag.mode.includes('n')) y -= minSize - height
-    height = minSize
-  }
-
-  editor.cropX = x
-  editor.cropY = y
-  editor.cropWidth = width
-  editor.cropHeight = height
-  clampCropRect()
-}
-
 function onKeyDown(event: KeyboardEvent) {
   if (event.key === 'Escape' && mobileUserMenuOpen.value) {
     closeMobileUserMenu()
@@ -5895,146 +5576,30 @@ onBeforeUnmount(() => {
         <button v-if="lightboxItems.length > 1" class="overlay-arrow right" @click.stop="nextLightbox">›</button>
       </div>
 
-      <div v-if="editModeOpen && activeMedia" class="editor-fullscreen">
-        <div class="editor-head editor-head-full">
-          <div>
-            <div class="details-title">Photo editor</div>
-            <div class="muted">{{ activeMedia.filename }}</div>
-          </div>
-          <button class="chip" @click="closeEditMode">Close</button>
-        </div>
-
-        <div class="editor-layout">
-          <div class="editor-canvas">
-            <div class="editor-preview">
-              <div
-                v-if="thumbs[activeMedia.id] && canPreviewInBrowser(activeMedia)"
-                class="editor-crop-stage"
-                @pointermove="onCropPointerMove"
-                @pointerup="stopCropDrag"
-                @pointercancel="stopCropDrag"
-                @pointerleave="stopCropDrag"
-              >
-                <div ref="editorCropStage" class="editor-image-frame" :style="editorPreviewFrameStyle">
-                  <img
-                    class="overlay-image editor-image"
-                    :src="thumbs[activeMedia.id]"
-                    :alt="activeMedia.filename"
-                    :style="mediaFilterStyleFromEditor()"
-                  />
-                  <div class="crop-rect" :style="editorCropRectStyle" @pointerdown="startCropDrag($event, 'move')">
-                    <span class="crop-grid v1"></span>
-                    <span class="crop-grid v2"></span>
-                    <span class="crop-grid h1"></span>
-                    <span class="crop-grid h2"></span>
-                    <span class="crop-handle nw" @pointerdown.stop="startCropDrag($event, 'nw')"></span>
-                    <span class="crop-handle ne" @pointerdown.stop="startCropDrag($event, 'ne')"></span>
-                    <span class="crop-handle sw" @pointerdown.stop="startCropDrag($event, 'sw')"></span>
-                    <span class="crop-handle se" @pointerdown.stop="startCropDrag($event, 'se')"></span>
-                    <span class="crop-handle n" @pointerdown.stop="startCropDrag($event, 'n')"></span>
-                    <span class="crop-handle s" @pointerdown.stop="startCropDrag($event, 's')"></span>
-                    <span class="crop-handle w" @pointerdown.stop="startCropDrag($event, 'w')"></span>
-                    <span class="crop-handle e" @pointerdown.stop="startCropDrag($event, 'e')"></span>
-                  </div>
-                </div>
-              </div>
-              <div v-else class="overlay-fallback">Preview unavailable for this format</div>
-            </div>
-          </div>
-
-          <aside class="editor-sidebar">
-            <div class="editor-controls">
-              <div class="slider-row"><span>Preview scale</span><input v-model="editorPreviewScale" type="range" min="25" max="300" /></div>
-              <div class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
-              <div class="slider-row"><span>Brightness</span><input v-model="editor.brightness" type="range" min="-60" max="60" /></div>
-              <div class="slider-row"><span>Contrast</span><input v-model="editor.contrast" type="range" min="-60" max="60" /></div>
-              <div class="slider-row"><span>Saturation</span><input v-model="editor.saturation" type="range" min="-60" max="60" /></div>
-              <div class="slider-row"><span>Tone depth</span><input v-model="editor.toneDepth" type="range" min="-100" max="100" /></div>
-              <div class="slider-row"><span>Shadows level</span><input v-model="editor.shadowsLevel" type="range" min="-100" max="100" /></div>
-              <div class="slider-row"><span>Highlights level</span><input v-model="editor.highlightsLevel" type="range" min="-100" max="100" /></div>
-              <div class="slider-row"><span>Sharpness</span><input v-model="editor.sharpness" type="range" min="0" max="100" /></div>
-              <div class="slider-row"><span>Definition</span><input v-model="editor.definition" type="range" min="-100" max="100" /></div>
-              <div class="slider-row"><span>Vignette</span><input v-model="editor.vignette" type="range" min="0" max="100" /></div>
-              <div class="slider-row"><span>Glamour</span><input v-model="editor.glamour" type="range" min="0" max="100" /></div>
-              <div class="slider-row"><span>Grayscale</span><input v-model="editor.grayscale" type="range" min="0" max="100" /></div>
-              <div class="slider-row"><span>Sepia</span><input v-model="editor.sepia" type="range" min="0" max="100" /></div>
-              <div class="slider-row"><span>Crop zoom</span><input v-model="editor.cropZoom" type="range" min="0" max="60" /></div>
-              <div class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" step="90" /></div>
-              <div class="slider-row switches">
-                <span>Mirror</span>
-                <div class="switch-group">
-                  <label><input v-model="editor.flipX" type="checkbox" /> Horizontal</label>
-                  <label><input v-model="editor.flipY" type="checkbox" /> Vertical</label>
-                </div>
-              </div>
-            </div>
-
-            <div class="editor-actions">
-              <button class="btn ghost" @click="resetEditorAdjustments">Reset</button>
-              <button class="btn ghost" @click="closeEditMode">Cancel</button>
-              <button class="btn ghost" :disabled="saving || undoCount === 0" @click="undoLastPermanentEdit">
-                Undo apply ({{ undoCount }})
-              </button>
-              <button class="btn" :disabled="saving" @click="applyImageEditsPermanently">Apply permanently</button>
-            </div>
-          </aside>
-        </div>
-
-        <div class="editor-mobile-panel">
-          <div class="editor-mobile-tabs">
-            <button
-              v-for="tab in editorMobileTabs"
-              :key="`editor-tab-${tab.key}`"
-              class="chip"
-              :class="{ active: activeEditorMobileTab === tab.key }"
-              @click="activeEditorMobileTab = tab.key"
-            >
-              {{ tab.label }}
-            </button>
-          </div>
-
-          <div class="editor-mobile-control">
-            <div v-if="activeEditorMobileTab === 'previewScale'" class="slider-row"><span>Preview scale</span><input v-model="editorPreviewScale" type="range" min="25" max="300" /></div>
-            <div v-else-if="activeEditorMobileTab === 'temperature'" class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'brightness'" class="slider-row"><span>Brightness</span><input v-model="editor.brightness" type="range" min="-60" max="60" /></div>
-            <div v-else-if="activeEditorMobileTab === 'contrast'" class="slider-row"><span>Contrast</span><input v-model="editor.contrast" type="range" min="-60" max="60" /></div>
-            <div v-else-if="activeEditorMobileTab === 'saturation'" class="slider-row"><span>Saturation</span><input v-model="editor.saturation" type="range" min="-60" max="60" /></div>
-            <div v-else-if="activeEditorMobileTab === 'toneDepth'" class="slider-row"><span>Tone depth</span><input v-model="editor.toneDepth" type="range" min="-100" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'shadowsLevel'" class="slider-row"><span>Shadows level</span><input v-model="editor.shadowsLevel" type="range" min="-100" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'highlightsLevel'" class="slider-row"><span>Highlights level</span><input v-model="editor.highlightsLevel" type="range" min="-100" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'sharpness'" class="slider-row"><span>Sharpness</span><input v-model="editor.sharpness" type="range" min="0" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'definition'" class="slider-row"><span>Definition</span><input v-model="editor.definition" type="range" min="-100" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'vignette'" class="slider-row"><span>Vignette</span><input v-model="editor.vignette" type="range" min="0" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'glamour'" class="slider-row"><span>Glamour</span><input v-model="editor.glamour" type="range" min="0" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'grayscale'" class="slider-row"><span>Grayscale</span><input v-model="editor.grayscale" type="range" min="0" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'sepia'" class="slider-row"><span>Sepia</span><input v-model="editor.sepia" type="range" min="0" max="100" /></div>
-            <div v-else-if="activeEditorMobileTab === 'cropZoom'" class="slider-row"><span>Crop zoom</span><input v-model="editor.cropZoom" type="range" min="0" max="60" /></div>
-            <div v-else-if="activeEditorMobileTab === 'rotate'" class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" step="90" /></div>
-            <div v-else class="slider-row switches">
-              <span>Mirror</span>
-              <div class="switch-group">
-                <label><input v-model="editor.flipX" type="checkbox" /> Horizontal</label>
-                <label><input v-model="editor.flipY" type="checkbox" /> Vertical</label>
-              </div>
-            </div>
-          </div>
-
-          <div class="editor-actions editor-actions-mobile">
-            <button class="btn ghost" aria-label="Reset adjustments" title="Reset" @click="resetEditorAdjustments">
-              <i class="ri-refresh-line" aria-hidden="true"></i>
-            </button>
-            <button class="btn ghost" aria-label="Cancel editing" title="Cancel" @click="closeEditMode">
-              <i class="ri-close-line" aria-hidden="true"></i>
-            </button>
-            <button class="btn ghost" aria-label="Undo last apply" title="Undo" :disabled="saving || undoCount === 0" @click="undoLastPermanentEdit">
-              <i class="ri-arrow-go-back-line" aria-hidden="true"></i>
-            </button>
-            <button class="btn" aria-label="Apply permanently" title="Apply" :disabled="saving" @click="applyImageEditsPermanently">
-              <i class="ri-check-line" aria-hidden="true"></i>
-            </button>
-          </div>
-        </div>
-      </div>
+      <PhotoEditorPanel
+        :open="editModeOpen"
+        :active-media="activeMedia"
+        :thumb-src="activeMedia ? (thumbs[activeMedia.id] || '') : ''"
+        :can-preview="Boolean(activeMedia && canPreviewInBrowser(activeMedia))"
+        :editor="editor"
+        :editor-preview-scale="editorPreviewScale"
+        :active-editor-mobile-tab="activeEditorMobileTab"
+        :editor-mobile-tabs="editorMobileTabs"
+        :editor-preview-frame-style="editorPreviewFrameStyle"
+        :editor-crop-rect-style="editorCropRectStyle"
+        :editor-filter-style="mediaFilterStyleFromEditor()"
+        :saving="saving"
+        :undo-count="undoCount"
+        @update:editor-preview-scale="editorPreviewScale = $event"
+        @update:active-editor-mobile-tab="activeEditorMobileTab = $event"
+        @close="closeEditMode"
+        @crop-move="onCropPointerMove"
+        @stop-crop="stopCropDrag"
+        @start-crop="startCropDrag"
+        @reset="resetEditorAdjustments"
+        @undo="undoLastPermanentEdit"
+        @apply="applyImageEditsPermanently"
+      />
 
       <div v-if="accountPageOpen" class="account-page" @click.self="closeAccountPage">
         <section class="account-page-shell shell">
