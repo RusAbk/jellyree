@@ -503,11 +503,13 @@ export class MediaController {
         ? [
             { filename: normalizedSortDir },
             { createdAt: 'desc' },
+            { id: 'desc' },
           ]
         : [
             { metadataCreatedAt: normalizedSortDir },
             { capturedAt: normalizedSortDir },
             { createdAt: normalizedSortDir },
+            { id: normalizedSortDir },
           ];
 
     const [items, total] = await Promise.all([

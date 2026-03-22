@@ -2272,14 +2272,25 @@ function onGalleryScroll() {
   scheduleThumbVisibilityRefresh()
   scheduleNearViewportThumbLoad()
 
+  if (shouldLoadMoreByViewport()) {
+    void loadNextMediaPage()
+  }
+}
+
+function shouldLoadMoreByViewport() {
   const main = galleryMainRef.value
-  if (!main) return
+  if (!main) return false
 
   const threshold = Math.max(main.clientHeight * 1.2, 900)
   const distanceToBottom = main.scrollHeight - (main.scrollTop + main.clientHeight)
-  if (distanceToBottom <= threshold) {
+  return distanceToBottom <= threshold
+}
+
+function scheduleFollowupPaginationCheck() {
+  requestAnimationFrame(() => {
+    if (!shouldLoadMoreByViewport()) return
     void loadNextMediaPage()
-  }
+  })
 }
 
 function scheduleThumbVisibilityRefresh() {
@@ -2375,6 +2386,9 @@ async function loadAll(options: { clearGrid?: boolean } = {}) {
     }
 
     await Promise.all(mediaResult.items.slice(0, 16).map((item) => loadThumb(item.id)))
+    if (mediaResult.hasMore) {
+      scheduleFollowupPaginationCheck()
+    }
   } catch (error) {
     if (runId !== loadAllRunId) return
     message.value = (error as Error).message
@@ -2413,6 +2427,9 @@ async function loadNextMediaPage() {
     mediaPage.value = nextPage
     mediaHasMore.value = response.hasMore
     mediaTotal.value = response.total
+    if (response.hasMore) {
+      scheduleFollowupPaginationCheck()
+    }
   } catch (error) {
     message.value = (error as Error).message
   } finally {
