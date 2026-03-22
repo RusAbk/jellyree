@@ -213,6 +213,10 @@ const toast = reactive({
   visible: false,
   text: '',
 })
+const undoSnackbar = reactive({
+  visible: false,
+  text: '',
+})
 const shareDialog = reactive({
   open: false,
   resourceType: 'media' as 'media' | 'album',
@@ -228,6 +232,13 @@ const shareDialog = reactive({
 })
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null
+let undoCommitTimer: ReturnType<typeof setTimeout> | null = null
+let pendingUndoAction: null | {
+  commit: () => Promise<unknown>
+  rollback: () => void
+  successMessage?: string
+} = null
+const UNDO_SNACKBAR_MS = 8000
 let popStateHandler: (() => void) | null = null
 const thumbLoadsInFlight = new Map<string, Promise<void>>()
 const fullImageLoadsInFlight = new Map<string, Promise<void>>()
@@ -3038,6 +3049,18 @@ function clearSelection() {
   }
 }
 
+function selectAllInCurrentFilter() {
+  const ids = filteredMedia.value.map((item) => item.id)
+  if (ids.length === 0) return
+  selectedMediaIds.value = ids
+  if (!activeMediaId.value || !ids.includes(activeMediaId.value)) {
+    activeMediaId.value = ids[0] || null
+  }
+  if (isMobileViewport.value) {
+    mobileSelectMode.value = true
+  }
+}
+
 function setMediaDensity(nextDensity: 's' | 'm' | 'l') {
   mediaDensity.value = nextDensity
 }
@@ -3141,6 +3164,68 @@ function showToast(text: string) {
   toastTimer = setTimeout(() => {
     toast.visible = false
   }, 1800)
+}
+
+async function commitPendingUndoAction() {
+  if (!pendingUndoAction) return
+  const action = pendingUndoAction
+  pendingUndoAction = null
+  undoSnackbar.visible = false
+  undoSnackbar.text = ''
+  if (undoCommitTimer) {
+    clearTimeout(undoCommitTimer)
+    undoCommitTimer = null
+  }
+
+  try {
+    await action.commit()
+    if (action.successMessage) {
+      message.value = action.successMessage
+    }
+    await loadAll()
+  } catch (error) {
+    message.value = (error as Error).message
+    action.rollback()
+  }
+}
+
+function cancelPendingUndoAction() {
+  if (!pendingUndoAction) return
+  pendingUndoAction.rollback()
+  pendingUndoAction = null
+  undoSnackbar.visible = false
+  undoSnackbar.text = ''
+  if (undoCommitTimer) {
+    clearTimeout(undoCommitTimer)
+    undoCommitTimer = null
+  }
+}
+
+async function scheduleUndoAction(payload: {
+  text: string
+  commit: () => Promise<unknown>
+  rollback: () => void
+  successMessage?: string
+}) {
+  if (pendingUndoAction) {
+    await commitPendingUndoAction()
+  }
+
+  pendingUndoAction = {
+    commit: payload.commit,
+    rollback: payload.rollback,
+    successMessage: payload.successMessage,
+  }
+
+  undoSnackbar.text = payload.text
+  undoSnackbar.visible = true
+
+  if (undoCommitTimer) {
+    clearTimeout(undoCommitTimer)
+  }
+  undoCommitTimer = setTimeout(() => {
+    void commitPendingUndoAction()
+  }, UNDO_SNACKBAR_MS)
 }
 
 function normalizeTags(input: string) {
@@ -3393,28 +3478,70 @@ async function deleteAlbum(album: Album) {
 
 async function bulkMoveSelectedToAlbum() {
   if (!token.value || selectedMediaIds.value.length < 2 || !bulkTargetAlbumId.value) return
+  const mediaIds = [...selectedMediaIds.value]
+  const targetAlbumId = bulkTargetAlbumId.value
+  const snapshot = new Map<string, Array<{ albumId: string; mediaId: string }>>()
 
-  try {
-    await api.bulkMoveAlbum(authHeaders(), selectedMediaIds.value, bulkTargetAlbumId.value)
-    message.value = `Moved ${selectedMediaIds.value.length} photo(s) to album`
-    await loadAll()
-  } catch (error) {
-    message.value = (error as Error).message
-  }
+  media.value.forEach((item) => {
+    if (!mediaIds.includes(item.id)) return
+    snapshot.set(item.id, item.albumMedia.map((entry) => ({ ...entry })))
+  })
+
+  media.value = media.value.map((item) => {
+    if (!mediaIds.includes(item.id)) return item
+    return {
+      ...item,
+      albumMedia: [{ albumId: targetAlbumId, mediaId: item.id }],
+    }
+  })
+
+  await scheduleUndoAction({
+    text: `Moved ${mediaIds.length} photo(s)`,
+    commit: () => api.bulkMoveAlbum(authHeaders(), mediaIds, targetAlbumId),
+    rollback: () => {
+      media.value = media.value.map((item) => {
+        const originalAlbumMedia = snapshot.get(item.id)
+        if (!originalAlbumMedia) return item
+        return {
+          ...item,
+          albumMedia: originalAlbumMedia.map((entry) => ({ ...entry })),
+        }
+      })
+    },
+    successMessage: `Moved ${mediaIds.length} photo(s) to album`,
+  })
 }
 
 async function bulkSetFavorite(value: boolean) {
   if (!token.value || selectedMediaIds.value.length < 2) return
+  const mediaIds = [...selectedMediaIds.value]
+  const snapshot = new Map<string, boolean>()
 
-  try {
-    await api.bulkFavorite(authHeaders(), selectedMediaIds.value, value)
-    message.value = value
-      ? `Added ${selectedMediaIds.value.length} photo(s) to favorites`
-      : `Removed ${selectedMediaIds.value.length} photo(s) from favorites`
-    await loadAll()
-  } catch (error) {
-    message.value = (error as Error).message
-  }
+  media.value.forEach((item) => {
+    if (!mediaIds.includes(item.id)) return
+    snapshot.set(item.id, item.isFavorite)
+  })
+
+  media.value = media.value.map((item) =>
+    mediaIds.includes(item.id)
+      ? { ...item, isFavorite: value }
+      : item,
+  )
+
+  await scheduleUndoAction({
+    text: value ? `Marked ${mediaIds.length} favorite` : `Removed favorite on ${mediaIds.length}`,
+    commit: () => api.bulkFavorite(authHeaders(), mediaIds, value),
+    rollback: () => {
+      media.value = media.value.map((item) => {
+        const prev = snapshot.get(item.id)
+        if (prev === undefined) return item
+        return { ...item, isFavorite: prev }
+      })
+    },
+    successMessage: value
+      ? `Added ${mediaIds.length} photo(s) to favorites`
+      : `Removed ${mediaIds.length} photo(s) from favorites`,
+  })
 }
 
 async function bulkDeleteSelected() {
@@ -3422,15 +3549,38 @@ async function bulkDeleteSelected() {
   const ok = window.confirm(`Delete ${selectedMediaIds.value.length} selected photo(s)?`)
   if (!ok) return
 
-  try {
-    await api.bulkDelete(authHeaders(), selectedMediaIds.value)
-    selectedMediaIds.value = []
-    activeMediaId.value = null
-    message.value = 'Selected photos deleted'
-    await loadAll()
-  } catch (error) {
-    message.value = (error as Error).message
+  const mediaIds = [...selectedMediaIds.value]
+  const idsSet = new Set(mediaIds)
+  const removedEntries = media.value
+    .map((item, index) => ({ item, index }))
+    .filter((entry) => idsSet.has(entry.item.id))
+
+  const previousSelected = [...selectedMediaIds.value]
+  const previousActive = activeMediaId.value
+
+  media.value = media.value.filter((item) => !idsSet.has(item.id))
+  selectedMediaIds.value = selectedMediaIds.value.filter((id) => !idsSet.has(id))
+  if (previousActive && idsSet.has(previousActive)) {
+    activeMediaId.value = selectedMediaIds.value[0] || media.value[0]?.id || null
   }
+
+  await scheduleUndoAction({
+    text: `Deleted ${mediaIds.length} photo(s)`,
+    commit: () => api.bulkDelete(authHeaders(), mediaIds),
+    rollback: () => {
+      const restored = [...media.value]
+      removedEntries
+        .sort((a, b) => a.index - b.index)
+        .forEach((entry) => {
+          const nextIndex = Math.max(0, Math.min(entry.index, restored.length))
+          restored.splice(nextIndex, 0, entry.item)
+        })
+      media.value = restored
+      selectedMediaIds.value = previousSelected
+      activeMediaId.value = previousActive
+    },
+    successMessage: 'Selected photos deleted',
+  })
 }
 
 async function toggleFavorite(mediaId: string, value?: boolean) {
@@ -3439,53 +3589,57 @@ async function toggleFavorite(mediaId: string, value?: boolean) {
   if (!item) return
   const nextValue = typeof value === 'boolean' ? value : !item.isFavorite
 
-  try {
-    await api.updateMedia(authHeaders(), mediaId, { isFavorite: nextValue })
-    media.value = media.value.map((entry) =>
-      entry.id === mediaId ? { ...entry, isFavorite: nextValue } : entry,
-    )
-  } catch (error) {
-    message.value = (error as Error).message
-  }
+  const previousValue = item.isFavorite
+  media.value = media.value.map((entry) =>
+    entry.id === mediaId ? { ...entry, isFavorite: nextValue } : entry,
+  )
+
+  await scheduleUndoAction({
+    text: nextValue ? 'Marked as favorite' : 'Removed from favorites',
+    commit: () => api.updateMedia(authHeaders(), mediaId, { isFavorite: nextValue }),
+    rollback: () => {
+      media.value = media.value.map((entry) =>
+        entry.id === mediaId ? { ...entry, isFavorite: previousValue } : entry,
+      )
+    },
+  })
 }
 
 async function deleteMedia(mediaId: string) {
   if (!token.value) return
-  try {
-    const currentItems = [...lightboxItems.value]
-    const currentIndex = currentItems.findIndex((item) => item.id === mediaId)
+  const removed = media.value
+    .map((item, index) => ({ item, index }))
+    .find((entry) => entry.item.id === mediaId)
+  if (!removed) return
 
-    await api.deleteMedia(authHeaders(), mediaId)
+  const previousSelected = [...selectedMediaIds.value]
+  const previousActive = activeMediaId.value
+  const previousLightboxOpen = lightboxOpen.value
 
-    if (lightboxOpen.value) {
-      const remainingItems = currentItems.filter((item) => item.id !== mediaId)
-      if (remainingItems.length > 0) {
-        const nextIndex = currentIndex >= 0 && currentIndex < remainingItems.length ? currentIndex : 0
-        const nextItem = remainingItems[nextIndex]
-        if (nextItem) {
-          activeMediaId.value = nextItem.id
-          selectedMediaIds.value = [nextItem.id]
-        }
-      } else {
-        activeMediaId.value = null
-        selectedMediaIds.value = []
-        lightboxOpen.value = false
-      }
-    } else if (activeMediaId.value === mediaId) {
-      activeMediaId.value = null
+  media.value = media.value.filter((item) => item.id !== mediaId)
+  selectedMediaIds.value = selectedMediaIds.value.filter((id) => id !== mediaId)
+  if (activeMediaId.value === mediaId) {
+    activeMediaId.value = selectedMediaIds.value[0] || media.value[0]?.id || null
+    if (!activeMediaId.value) {
+      lightboxOpen.value = false
       editModeOpen.value = false
     }
-
-    closeContextMenus()
-    await loadAll()
-
-    if (lightboxOpen.value) {
-      await nextTick()
-      scrollActiveLightboxThumbIntoView()
-    }
-  } catch (error) {
-    message.value = (error as Error).message
   }
+  closeContextMenus()
+
+  await scheduleUndoAction({
+    text: 'Deleted photo',
+    commit: () => api.deleteMedia(authHeaders(), mediaId),
+    rollback: () => {
+      const restored = [...media.value]
+      const nextIndex = Math.max(0, Math.min(removed.index, restored.length))
+      restored.splice(nextIndex, 0, removed.item)
+      media.value = restored
+      selectedMediaIds.value = previousSelected
+      activeMediaId.value = previousActive
+      lightboxOpen.value = previousLightboxOpen
+    },
+  })
 }
 
 async function duplicateMedia(mediaId: string) {
@@ -3994,6 +4148,7 @@ function logout() {
   clearLightboxFullImage()
   clearPersistedAppViewState()
   closeContextMenus()
+  cancelPendingUndoAction()
   accountPageOpen.value = false
   accountLoading.value = false
   accountProfile.value = null
@@ -4178,6 +4333,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   cancelTouchGesture()
+  cancelPendingUndoAction()
   if (popStateHandler) {
     window.removeEventListener('popstate', popStateHandler)
     popStateHandler = null
@@ -4446,6 +4602,10 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else class="mobile-screen-scroll">
+            <button class="mobile-screen-item" :disabled="filteredMedia.length === 0" @click="selectAllInCurrentFilter(); closeMobileUserMenu()">
+              <i class="ri-checkbox-circle-line" aria-hidden="true"></i>
+              <span>Select all in current filter</span>
+            </button>
             <AlbumTreeSelect
               v-model="bulkTargetAlbumId"
               :albums="albums"
@@ -4688,6 +4848,8 @@ onBeforeUnmount(() => {
 
           <div v-if="!isMobileViewport && selectedCount >= 2" class="gallery-toolbar shell">
             <div class="row-actions">
+              <div class="bulk-selected-pill">{{ selectedCount }} selected</div>
+              <button class="btn ghost" :disabled="filteredMedia.length === 0" @click="selectAllInCurrentFilter">Select all in current filter</button>
               <AlbumTreeSelect
                 v-model="bulkTargetAlbumId"
                 :albums="albums"
@@ -5171,6 +5333,13 @@ onBeforeUnmount(() => {
         <div v-if="toast.visible" class="toast-notice">{{ toast.text }}</div>
       </Transition>
 
+      <Transition name="toast-pop">
+        <div v-if="undoSnackbar.visible" class="undo-snackbar" role="status" aria-live="polite">
+          <span>{{ undoSnackbar.text }}</span>
+          <button class="undo-snackbar-btn" @click="cancelPendingUndoAction">Undo</button>
+        </div>
+      </Transition>
+
       <div v-if="lightboxOpen && activeMedia" class="overlay" @click.self="closeLightbox">
         <button v-if="lightboxItems.length > 1" class="overlay-arrow left" @click.stop="prevLightbox">‹</button>
 
@@ -5486,10 +5655,10 @@ onBeforeUnmount(() => {
               <div class="account-card-label">Storage used</div>
               <div class="account-card-value">{{ formatFileSize(accountStats?.totalSizeBytes ?? 0) }}</div>
               <div class="muted" v-if="accountStats">
-                Source: {{ accountStats.statsSource === 'r2' ? 'Storage (R2)' : 'Database fallback' }}
+                Data source: {{ accountStats.statsSource === 'r2' ? 'Live storage scan' : 'Catalog estimate' }}
               </div>
               <div class="muted" v-if="accountStats?.storageTotalSizeBytes !== null">
-                Raw storage volume: {{ formatFileSize(accountStats?.storageTotalSizeBytes ?? 0) }}
+                Scanned storage volume: {{ formatFileSize(accountStats?.storageTotalSizeBytes ?? 0) }}
               </div>
             </article>
             <article class="account-card account-card-wide">
@@ -5497,7 +5666,7 @@ onBeforeUnmount(() => {
               <div class="account-profile-row"><span>Name</span><strong>{{ accountProfile?.displayName || userName }}</strong></div>
               <div class="account-profile-row"><span>Email</span><strong>{{ accountProfile?.email || '—' }}</strong></div>
               <div class="account-profile-row"><span>Created</span><strong>{{ formatDateLabel(accountProfile?.createdAt || null) }}</strong></div>
-              <div class="account-profile-row" v-if="accountStats"><span>Stats filled</span><strong>{{ accountStats.isBackfilled ? 'yes' : 'no' }}</strong></div>
+              <div class="account-profile-row" v-if="accountStats"><span>Data completeness</span><strong>{{ accountStats.isBackfilled ? 'complete' : 'partial' }}</strong></div>
             </article>
           </div>
         </section>

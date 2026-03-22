@@ -1182,10 +1182,27 @@ body {
   border-radius: 12px;
   padding: 10px;
   margin-bottom: 10px;
+  position: sticky;
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  z-index: 30;
+  box-shadow: 0 10px 24px rgba(31, 41, 64, 0.14);
 }
 
 .gallery-toolbar .row-actions {
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.bulk-selected-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--text);
+  font-weight: 700;
+  padding: 6px 10px;
 }
 
 .shared-password-box {
@@ -1607,6 +1624,42 @@ body {
   box-shadow: 0 12px 28px rgba(31, 41, 64, 0.18);
   pointer-events: none;
   will-change: transform, opacity, filter;
+}
+
+.undo-snackbar {
+  position: fixed;
+  right: 24px;
+  bottom: 78px;
+  z-index: 225;
+  min-width: 260px;
+  max-width: min(88vw, 420px);
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border-strong);
+  background: linear-gradient(145deg, var(--bg-2), var(--bg-3));
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-shadow: 0 12px 28px rgba(31, 41, 64, 0.18);
+}
+
+.undo-snackbar-btn {
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.undo-snackbar-btn:hover {
+  border-color: var(--accent);
 }
 
 .toast-notice::before {
