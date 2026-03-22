@@ -4218,11 +4218,16 @@ onBeforeUnmount(() => {
               class="photo-card album-card"
               :class="{ 'file-tile-card': mediaViewMode === 'files', 'file-folder-card': mediaViewMode === 'files', 'long-press-pending': isLongPressPending('album', album.id) }"
               @click="onAlbumCardClick(album.id)"
+              @contextmenu.prevent="openAlbumContextMenu($event, album.id)"
               @touchstart="startTouchGesture('album', album.id, $event)"
               @touchmove.passive="moveTouchGesture($event)"
               @touchend="finishAlbumTouch(album.id)"
               @touchcancel="cancelTouchGesture"
             >
+              <button class="card-menu-btn menu-dots-btn" @click.stop="openAlbumContextMenu($event, album.id)">
+                ⋯
+              </button>
+
               <template v-if="mediaViewMode === 'files'">
                 <div class="file-tile-preview file-folder-preview">
                   <i class="ri-folder-3-line" aria-hidden="true"></i>
