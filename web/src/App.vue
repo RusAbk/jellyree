@@ -1917,7 +1917,6 @@ async function loadThumbsProgressively(items: MediaItem[]) {
   const ids = items
     .map((item) => item.id)
     .filter((id) => !thumbs.value[id])
-    .slice(0, 240)
 
   if (ids.length === 0) return
 
@@ -2053,6 +2052,7 @@ function scheduleNearViewportThumbLoad() {
     void (async () => {
       try {
         await loadThumbsNearViewport()
+        await loadThumbsProgressively(renderedMedia.value)
       } finally {
         nearViewportThumbLoadInFlight = false
       }
