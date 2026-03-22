@@ -1013,6 +1013,91 @@ body {
   letter-spacing: 0.8px;
 }
 
+.story-lane {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.88), rgba(233, 241, 255, 0.9));
+  padding: 10px;
+  margin: 0 0 12px;
+}
+
+.story-lane-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.story-lane-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  color: var(--text-dim);
+}
+
+.story-lane-track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(146px, 146px);
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.story-lane-card {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  text-align: left;
+}
+
+.story-lane-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.story-lane-img,
+.story-lane-fallback {
+  width: 100%;
+  height: 92px;
+  object-fit: cover;
+}
+
+.story-lane-fallback {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(140deg, #e9eeff, #dfe8ff 50%, #e6edff);
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.8px;
+}
+
+.story-lane-meta {
+  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.story-lane-day {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.story-lane-name {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .gallery-loading-state {
   border: 1px dashed var(--border-strong);
   background: var(--bg-3);
@@ -1252,6 +1337,102 @@ body {
   right: 6px;
 }
 
+.photo-date-block {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 3;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.photo-status-badges {
+  position: absolute;
+  left: 8px;
+  top: 40px;
+  right: 42px;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.photo-status-chip {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text-dim);
+}
+
+.photo-status-chip.is-favorite {
+  border-color: rgba(199, 146, 234, 0.46);
+  color: #8f49c4;
+}
+
+.photo-status-chip.is-edited {
+  border-color: rgba(70, 129, 240, 0.42);
+  color: #345fcf;
+}
+
+.photo-status-chip.is-shared {
+  border-color: rgba(102, 217, 163, 0.5);
+  color: #0f8b63;
+}
+
+.photo-card-quick-actions {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 4;
+  display: inline-flex;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.photo-card:hover .photo-card-quick-actions,
+.photo-card.active .photo-card-quick-actions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.card-quick-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  font-size: 14px;
+}
+
+.card-quick-btn:hover {
+  border-color: var(--border-emphasis);
+}
+
+.card-quick-btn.danger {
+  color: var(--danger);
+}
+
 .card-select-indicator {
   position: absolute;
   top: 8px;
@@ -1384,6 +1565,11 @@ body {
 
 .photo-card-tags.has-fav {
   left: 36px;
+}
+
+.photo-card-quick-actions + .fav-indicator {
+  left: 8px;
+  bottom: 8px;
 }
 
 .photo-card-tag {

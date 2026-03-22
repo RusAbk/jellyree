@@ -20,6 +20,7 @@ type PersistedAppViewState = {
   mediaViewMode: 'gallery' | 'files'
   mediaSortBy: 'date' | 'name'
   mediaDensity: 's' | 'm' | 'l'
+  mediaDateGrouping: boolean
   search: string
   activeMediaId: string | null
   lightboxOpen: boolean
@@ -47,6 +48,12 @@ type EditingTagChip = {
   draft: boolean
 }
 
+type StoryLaneEntry = {
+  dayKey: string
+  dayLabel: string
+  item: MediaItem
+}
+
 const APP_VIEW_STATE_KEY = 'jellyree_app_view_state'
 
 const token = ref(localStorage.getItem('jellyree_token') || '')
@@ -72,6 +79,7 @@ const tagFilterMode = ref<'and' | 'or'>('or')
 const mediaViewMode = ref<'gallery' | 'files'>('gallery')
 const mediaSortBy = ref<'date' | 'name'>('date')
 const mediaDensity = ref<'s' | 'm' | 'l'>('m')
+const mediaDateGrouping = ref(true)
 const search = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -731,6 +739,49 @@ const renderedMedia = computed(() => {
 const mediaWindowTopPadding = computed(() => mediaVirtualWindow.value.topPadding)
 const mediaWindowBottomPadding = computed(() => mediaVirtualWindow.value.bottomPadding)
 
+const mediaDateMarkers = computed<Record<string, string>>(() => {
+  if (mediaViewMode.value !== 'gallery' || mediaSortBy.value !== 'date' || !mediaDateGrouping.value) return {}
+
+  const markers: Record<string, string> = {}
+  const seen = new Set<string>()
+
+  renderedMedia.value.forEach((item) => {
+    const bucket = getMediaDateBucket(item)
+    if (!seen.has(bucket.key)) {
+      seen.add(bucket.key)
+      markers[item.id] = bucket.label
+    }
+  })
+
+  return markers
+})
+
+const storyLaneItems = computed<StoryLaneEntry[]>(() => {
+  if (mediaViewMode.value !== 'gallery' || mediaSortBy.value !== 'date' || !mediaDateGrouping.value) return []
+
+  const byDay = new Map<string, StoryLaneEntry>()
+
+  filteredMedia.value.forEach((item) => {
+    const timestamp = getMediaTimestamp(item)
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return
+
+    const dayKey = toLocalDayKey(timestamp)
+    const existing = byDay.get(dayKey)
+
+    if (!existing || getStoryLaneScore(item) > getStoryLaneScore(existing.item)) {
+      byDay.set(dayKey, {
+        dayKey,
+        dayLabel: formatStoryLaneDayLabel(timestamp),
+        item,
+      })
+    }
+  })
+
+  return Array.from(byDay.values())
+    .sort((a, b) => getMediaTimestamp(b.item) - getMediaTimestamp(a.item))
+    .slice(0, 10)
+})
+
 function authHeaders() {
   return token.value
 }
@@ -756,6 +807,7 @@ function readPersistedAppViewState(): PersistedAppViewState | null {
     const normalizedViewMode = parsed.mediaViewMode === 'files' ? 'files' : 'gallery'
     const normalizedSortBy = parsed.mediaSortBy === 'name' ? 'name' : 'date'
     const normalizedDensity = parsed.mediaDensity === 's' || parsed.mediaDensity === 'l' ? parsed.mediaDensity : 'm'
+    const normalizedDateGrouping = parsed.mediaDateGrouping !== false
 
     return {
       activeSection: section,
@@ -766,6 +818,7 @@ function readPersistedAppViewState(): PersistedAppViewState | null {
       mediaViewMode: normalizedViewMode,
       mediaSortBy: normalizedSortBy,
       mediaDensity: normalizedDensity,
+      mediaDateGrouping: normalizedDateGrouping,
       search: typeof parsed.search === 'string' ? parsed.search : '',
       activeMediaId: typeof parsed.activeMediaId === 'string' && parsed.activeMediaId ? parsed.activeMediaId : null,
       lightboxOpen: parsed.lightboxOpen === true,
@@ -786,6 +839,7 @@ function persistAppViewState() {
     mediaViewMode: mediaViewMode.value,
     mediaSortBy: mediaSortBy.value,
     mediaDensity: mediaDensity.value,
+    mediaDateGrouping: mediaDateGrouping.value,
     search: search.value,
     activeMediaId: activeMediaId.value,
     lightboxOpen: lightboxOpen.value,
@@ -917,6 +971,7 @@ async function applyRouteFromLocation() {
       mediaViewMode.value = persisted.mediaViewMode
       mediaSortBy.value = persisted.mediaSortBy
       mediaDensity.value = persisted.mediaDensity
+      mediaDateGrouping.value = persisted.mediaDateGrouping
       if (persisted.activeSection === 'all') {
         activeAlbumId.value = persisted.activeAlbumId
         activeTagId.value = ''
@@ -1024,6 +1079,69 @@ function getMediaTimestamp(item: MediaItem) {
   const source = item.metadataCreatedAt || item.capturedAt || item.createdAt
   const timestamp = source ? Date.parse(source) : Number.NaN
   return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function toLocalDayKey(timestamp: number) {
+  const date = new Date(timestamp)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function getMediaDateBucket(item: MediaItem) {
+  const timestamp = getMediaTimestamp(item)
+  return getMediaDateBucketFromTimestamp(timestamp)
+}
+
+function getMediaDateBucketFromTimestamp(timestamp: number) {
+  const now = new Date()
+  const todayKey = toLocalDayKey(now.getTime())
+  const yesterday = new Date(now)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const yesterdayKey = toLocalDayKey(yesterday.getTime())
+
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return {
+      key: 'unknown',
+      label: 'Unknown date',
+    }
+  }
+
+  const dayKey = toLocalDayKey(timestamp)
+  if (dayKey === todayKey) {
+    return {
+      key: dayKey,
+      label: 'Today',
+    }
+  }
+  if (dayKey === yesterdayKey) {
+    return {
+      key: dayKey,
+      label: 'Yesterday',
+    }
+  }
+
+  const date = new Date(timestamp)
+  const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+  return {
+    key: monthKey,
+    label: date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+  }
+}
+
+function getStoryLaneScore(item: MediaItem) {
+  let score = getMediaTimestamp(item)
+  if (item.isFavorite) score += 1_000_000_000_000
+  if ((item.revisionCount ?? 0) > 0) score += 100_000_000_000
+  if (isMediaShareEnabled(item.id)) score += 10_000_000_000
+  return score
+}
+
+function formatStoryLaneDayLabel(timestamp: number) {
+  const bucket = getMediaDateBucketFromTimestamp(timestamp)
+  if (bucket.label === 'Today' || bucket.label === 'Yesterday') return bucket.label
+  return new Date(timestamp).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 }
 
 function formatDateLabel(value: string | null) {
@@ -3900,6 +4018,7 @@ watch(
     mediaViewMode.value,
     mediaSortBy.value,
     mediaDensity.value,
+    mediaDateGrouping.value,
     search.value,
     activeMediaId.value,
     lightboxOpen.value,
@@ -4516,6 +4635,18 @@ onBeforeUnmount(() => {
                 <button class="chip" :disabled="selectedTagFilterIds.length === 0" @click="clearTagFilters">Clear</button>
               </div>
 
+              <div class="mini-group">
+                <span class="mini-label">Date groups</span>
+                <button
+                  class="chip"
+                  :class="{ active: mediaDateGrouping }"
+                  :disabled="mediaSortBy !== 'date' || mediaViewMode !== 'gallery'"
+                  @click="mediaDateGrouping = !mediaDateGrouping"
+                >
+                  {{ mediaDateGrouping ? 'On' : 'Off' }}
+                </button>
+              </div>
+
               <div class="mini-selected-count">{{ selectedCount }} selected</div>
             </div>
           </div>
@@ -4551,6 +4682,40 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="drop-hint">Drag photos to album tree on the left to move</div>
+
+          <section
+            v-if="mediaViewMode === 'gallery' && storyLaneItems.length > 0"
+            class="story-lane shell"
+            aria-label="Story lane"
+          >
+            <div class="story-lane-head">
+              <div class="story-lane-title">Story lane</div>
+              <div class="muted">Best picks by day</div>
+            </div>
+            <div class="story-lane-track">
+              <button
+                v-for="story in storyLaneItems"
+                :key="`story-${story.dayKey}`"
+                class="story-lane-card"
+                @click="selectMedia(story.item.id); void loadThumb(story.item.id)"
+                @dblclick="openLightbox(story.item.id)"
+              >
+                <img
+                  v-if="thumbs[story.item.id] && canPreviewInBrowser(story.item)"
+                  class="story-lane-img"
+                  :src="thumbs[story.item.id]"
+                  :alt="story.item.filename"
+                  loading="lazy"
+                  @error="onThumbError(story.item.id)"
+                />
+                <div v-else class="story-lane-fallback">{{ formatFileExtension(story.item.filename) }}</div>
+                <div class="story-lane-meta">
+                  <div class="story-lane-day">{{ story.dayLabel }}</div>
+                  <div class="story-lane-name" :title="story.item.filename">{{ story.item.filename }}</div>
+                </div>
+              </button>
+            </div>
+          </section>
 
           <div v-if="showGalleryLoadingState" class="gallery-loading-state" aria-live="polite">
             <span class="gallery-loading-spinner" aria-hidden="true"></span>
@@ -4649,9 +4814,18 @@ onBeforeUnmount(() => {
               <div v-if="isMobileViewport && mobileSelectMode" class="card-select-indicator" :class="{ selected: selectedMediaSet.has(item.id) }">
                 <i v-if="selectedMediaSet.has(item.id)" class="ri-check-line" aria-hidden="true"></i>
               </div>
+              <div v-if="mediaDateMarkers[item.id]" class="photo-date-block">{{ mediaDateMarkers[item.id] }}</div>
               <button class="card-menu-btn menu-dots-btn" @click.stop="openMediaContextMenu($event, item.id)">
                 ⋯
               </button>
+              <div
+                v-if="item.isFavorite || (item.revisionCount ?? 0) > 0 || isMediaShareEnabled(item.id)"
+                class="photo-status-badges"
+              >
+                <span v-if="item.isFavorite" class="photo-status-chip is-favorite">favorite</span>
+                <span v-if="(item.revisionCount ?? 0) > 0" class="photo-status-chip is-edited">edited</span>
+                <span v-if="isMediaShareEnabled(item.id)" class="photo-status-chip is-shared">shared</span>
+              </div>
 
               <template v-if="mediaViewMode === 'files'">
                 <div class="file-tile-preview">
@@ -4701,6 +4875,23 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
               </template>
+              <div v-if="!isMobileViewport" class="photo-card-quick-actions">
+                <button
+                  class="card-quick-btn"
+                  :title="item.isFavorite ? 'Unfavorite' : 'Favorite'"
+                  @click.stop="toggleFavorite(item.id)"
+                >
+                  {{ item.isFavorite ? '★' : '☆' }}
+                </button>
+                <button
+                  class="card-quick-btn"
+                  title="Share settings"
+                  @click.stop="configureMediaShare(item.id)"
+                >
+                  ↗
+                </button>
+                <button class="card-quick-btn danger" title="Delete" @click.stop="deleteMedia(item.id)">🗑</button>
+              </div>
               <div class="fav-indicator" v-if="item.isFavorite">★</div>
             </article>
 
