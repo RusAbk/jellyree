@@ -1929,6 +1929,80 @@ label {
   overscroll-behavior: contain;
 }
 
+.account-page {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  background: rgba(241, 246, 255, 0.94);
+  backdrop-filter: blur(5px);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.account-page-shell {
+  width: min(860px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(234, 243, 255, 0.92));
+  padding: 18px;
+}
+
+.account-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.account-page-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.account-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-card-wide {
+  grid-column: 1 / -1;
+}
+
+.account-card-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-dim);
+}
+
+.account-card-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.account-profile-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px dashed var(--border);
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.account-profile-row:last-child {
+  border-bottom: none;
+}
+
 .overlay-content {
   width: min(1520px, 100vw);
   max-width: 100vw;

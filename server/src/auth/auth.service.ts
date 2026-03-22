@@ -59,6 +59,21 @@ export class AuthService {
     });
   }
 
+  async stats(userId: string) {
+    const [fileCount, aggregate] = await Promise.all([
+      this.prisma.media.count({ where: { ownerId: userId } }),
+      this.prisma.media.aggregate({
+        where: { ownerId: userId },
+        _sum: { sizeBytes: true },
+      }),
+    ]);
+
+    return {
+      fileCount,
+      totalSizeBytes: aggregate._sum.sizeBytes ?? 0,
+    };
+  }
+
   private async issueToken(id: string, email: string, displayName: string | null) {
     const accessToken = await this.jwtService.signAsync({
       sub: id,

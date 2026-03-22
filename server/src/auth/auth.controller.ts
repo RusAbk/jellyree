@@ -41,6 +41,21 @@ export class AuthController {
 
   @Get('me')
   async me(@Headers('authorization') authorization?: string) {
+    const userId = await this.resolveUserIdFromAuthorization(authorization);
+    const user = await this.authService.me(userId);
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+    return user;
+  }
+
+  @Get('stats')
+  async stats(@Headers('authorization') authorization?: string) {
+    const userId = await this.resolveUserIdFromAuthorization(authorization);
+    return this.authService.stats(userId);
+  }
+
+  private async resolveUserIdFromAuthorization(authorization?: string) {
     const token = authorization?.replace('Bearer ', '').trim();
     if (!token) {
       throw new UnauthorizedException('Missing token');
@@ -48,11 +63,7 @@ export class AuthController {
 
     try {
       const payload = await this.jwtService.verifyAsync<{ sub: string }>(token);
-      const user = await this.authService.me(payload.sub);
-      if (!user) {
-        throw new UnauthorizedException('User not found');
-      }
-      return user;
+      return payload.sub;
     } catch {
       throw new UnauthorizedException('Invalid token');
     }

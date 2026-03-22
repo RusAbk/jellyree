@@ -11,6 +11,18 @@ export type AuthResult = {
   }
 }
 
+export type MeProfile = {
+  id: string
+  email: string
+  displayName: string | null
+  createdAt: string
+}
+
+export type AccountStats = {
+  fileCount: number
+  totalSizeBytes: number
+}
+
 export type MediaItem = {
   id: string
   ownerId: string
@@ -108,7 +120,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  me: (token: string) => request('/auth/me', { method: 'GET' }, token),
+  me: (token: string) => request<MeProfile>('/auth/me', { method: 'GET' }, token),
+  accountStats: (token: string) => request<AccountStats>('/auth/stats', { method: 'GET' }, token),
   listMedia: (
     token: string,
     params?: {

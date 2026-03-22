@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { api, type Album, type MediaItem, type Tag } from './api'
+import { api, type AccountStats, type Album, type MediaItem, type MeProfile, type Tag } from './api'
 import AlbumTreeSelect from './components/AlbumTreeSelect.vue'
 
 type AlbumTreeNode = {
@@ -84,6 +84,10 @@ const search = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const message = ref('')
+const accountPageOpen = ref(false)
+const accountLoading = ref(false)
+const accountProfile = ref<MeProfile | null>(null)
+const accountStats = ref<AccountStats | null>(null)
 const routeMode = ref<'app' | 'public-media' | 'public-album'>('app')
 const routeToken = ref('')
 const routeAlbumId = ref<string | null>(null)
@@ -1162,6 +1166,29 @@ function formatFileSize(sizeBytes: number) {
   }
   const rounded = value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)
   return `${rounded} ${units[unitIndex]}`
+}
+
+async function openAccountPage() {
+  if (!token.value) return
+  accountPageOpen.value = true
+  accountLoading.value = true
+
+  try {
+    const [profile, stats] = await Promise.all([
+      api.me(token.value),
+      api.accountStats(token.value),
+    ])
+    accountProfile.value = profile
+    accountStats.value = stats
+  } catch (error) {
+    message.value = (error as Error).message
+  } finally {
+    accountLoading.value = false
+  }
+}
+
+function closeAccountPage() {
+  accountPageOpen.value = false
 }
 
 function formatFileExtension(filename: string) {
@@ -3967,6 +3994,10 @@ function logout() {
   clearLightboxFullImage()
   clearPersistedAppViewState()
   closeContextMenus()
+  accountPageOpen.value = false
+  accountLoading.value = false
+  accountProfile.value = null
+  accountStats.value = null
   token.value = ''
   userName.value = ''
   media.value = []
@@ -4137,9 +4168,8 @@ onMounted(async () => {
 
   try {
     const me = await api.me(token.value)
-    userName.value = (me as { displayName?: string; email?: string }).displayName ||
-      (me as { email?: string }).email ||
-      'user'
+    accountProfile.value = me
+    userName.value = me.displayName || me.email || 'user'
     await applyRouteFromLocation()
   } catch {
     logout()
@@ -4306,6 +4336,7 @@ onBeforeUnmount(() => {
           <button class="chip hamburger-btn mobile-only" @click="toggleMobileUserMenu">
             <i class="ri-menu-line" aria-hidden="true"></i>
           </button>
+          <button class="chip desktop-only" @click="openAccountPage">Account</button>
           <button class="btn ghost desktop-only" @click="logout">Logout</button>
           <input
             ref="fileInput"
@@ -4348,6 +4379,10 @@ onBeforeUnmount(() => {
             <button class="mobile-screen-item" @click="openMobileMenuScreen('library')">
               <i class="ri-book-2-line" aria-hidden="true"></i>
               <span>Library</span>
+            </button>
+            <button class="mobile-screen-item" @click="closeMobileUserMenu(); void openAccountPage()">
+              <i class="ri-user-3-line" aria-hidden="true"></i>
+              <span>Account</span>
             </button>
             <button class="mobile-screen-item" :disabled="selectedCount < 2" @click="openMobileMenuScreen('bulk')">
               <i class="ri-stack-line" aria-hidden="true"></i>
@@ -5424,6 +5459,37 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
+      </div>
+
+      <div v-if="accountPageOpen" class="account-page" @click.self="closeAccountPage">
+        <section class="account-page-shell shell">
+          <div class="account-page-head">
+            <div>
+              <div class="gallery-title">Account</div>
+              <div class="muted">Storage overview and profile</div>
+            </div>
+            <button class="chip" @click="closeAccountPage">Close</button>
+          </div>
+
+          <div v-if="accountLoading" class="muted">Loading account data...</div>
+
+          <div v-else class="account-page-grid">
+            <article class="account-card">
+              <div class="account-card-label">Files</div>
+              <div class="account-card-value">{{ accountStats?.fileCount ?? 0 }}</div>
+            </article>
+            <article class="account-card">
+              <div class="account-card-label">Storage used</div>
+              <div class="account-card-value">{{ formatFileSize(accountStats?.totalSizeBytes ?? 0) }}</div>
+            </article>
+            <article class="account-card account-card-wide">
+              <div class="account-card-label">Profile</div>
+              <div class="account-profile-row"><span>Name</span><strong>{{ accountProfile?.displayName || userName }}</strong></div>
+              <div class="account-profile-row"><span>Email</span><strong>{{ accountProfile?.email || '—' }}</strong></div>
+              <div class="account-profile-row"><span>Created</span><strong>{{ formatDateLabel(accountProfile?.createdAt || null) }}</strong></div>
+            </article>
+          </div>
+        </section>
       </div>
 
       <div v-if="shareDialog.open" class="overlay" @click.self="closeShareDialog">
