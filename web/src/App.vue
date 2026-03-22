@@ -223,6 +223,8 @@ let thumbObserverRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let thumbFlushTimer: ReturnType<typeof requestAnimationFrame> | null = null
 let loadAllRunId = 0
 let virtualWindowUpdateTimer: ReturnType<typeof requestAnimationFrame> | null = null
+let nearViewportThumbLoadTimer: ReturnType<typeof setTimeout> | null = null
+let nearViewportThumbLoadInFlight = false
 const thumbQueue = {
   active: 0,
   limit: 6,
@@ -2038,8 +2040,30 @@ function scheduleVirtualWindowStateUpdate() {
   })
 }
 
+function scheduleNearViewportThumbLoad() {
+  if (nearViewportThumbLoadInFlight) return
+  if (nearViewportThumbLoadTimer) {
+    clearTimeout(nearViewportThumbLoadTimer)
+  }
+
+  nearViewportThumbLoadTimer = setTimeout(() => {
+    nearViewportThumbLoadTimer = null
+    nearViewportThumbLoadInFlight = true
+
+    void (async () => {
+      try {
+        await loadThumbsNearViewport()
+      } finally {
+        nearViewportThumbLoadInFlight = false
+      }
+    })()
+  }, 70)
+}
+
 function onGalleryScroll() {
   scheduleVirtualWindowStateUpdate()
+  scheduleThumbVisibilityRefresh()
+  scheduleNearViewportThumbLoad()
 }
 
 function scheduleThumbVisibilityRefresh() {
@@ -3952,6 +3976,10 @@ onBeforeUnmount(() => {
   if (virtualWindowUpdateTimer !== null) {
     cancelAnimationFrame(virtualWindowUpdateTimer)
     virtualWindowUpdateTimer = null
+  }
+  if (nearViewportThumbLoadTimer) {
+    clearTimeout(nearViewportThumbLoadTimer)
+    nearViewportThumbLoadTimer = null
   }
   pendingThumbUpdates.clear()
   clearLightboxFullImage()
