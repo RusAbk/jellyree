@@ -121,6 +121,10 @@ const masonryRef = ref<HTMLElement | null>(null)
 const tagsInputRef = ref<HTMLInputElement | null>(null)
 const lightboxTagsInputRef = ref<HTMLInputElement | null>(null)
 const selectedMediaIds = ref<string[]>([])
+const mediaPage = ref(1)
+const mediaHasMore = ref(true)
+const mediaTotal = ref(0)
+const mediaLoadingMore = ref(false)
 const suppressClickUntil = ref(0)
 const isTouchUi = ref(false)
 const suppressTagsCommitOnBlur = ref(false)
@@ -225,6 +229,7 @@ let loadAllRunId = 0
 let virtualWindowUpdateTimer: ReturnType<typeof requestAnimationFrame> | null = null
 let nearViewportThumbLoadTimer: ReturnType<typeof setTimeout> | null = null
 let nearViewportThumbLoadInFlight = false
+const mediaPageSize = 120
 const thumbQueue = {
   active: 0,
   limit: 6,
@@ -614,6 +619,9 @@ const activeMediaLocationLabel = computed(() => {
   return `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
 })
 const showGalleryLoadingState = computed(() => loading.value && media.value.length === 0)
+const showGalleryPaginationState = computed(
+  () => !showGalleryLoadingState.value && (mediaLoadingMore.value || (!mediaHasMore.value && media.value.length > 0)),
+)
 
 const marqueeStyle = computed(() => {
   const left = Math.min(marquee.startX, marquee.currentX)
@@ -2064,6 +2072,15 @@ function onGalleryScroll() {
   scheduleVirtualWindowStateUpdate()
   scheduleThumbVisibilityRefresh()
   scheduleNearViewportThumbLoad()
+
+  const main = galleryMainRef.value
+  if (!main) return
+
+  const threshold = Math.max(main.clientHeight * 1.2, 900)
+  const distanceToBottom = main.scrollHeight - (main.scrollTop + main.clientHeight)
+  if (distanceToBottom <= threshold) {
+    void loadNextMediaPage()
+  }
 }
 
 function scheduleThumbVisibilityRefresh() {
@@ -2116,29 +2133,36 @@ async function loadAll(options: { clearGrid?: boolean } = {}) {
     media.value = []
     selectedMediaIds.value = []
   }
+  mediaPage.value = 1
+  mediaHasMore.value = true
+  mediaTotal.value = 0
   loading.value = true
   message.value = ''
 
   try {
-    const queryParts = []
-    if (activeAlbumId.value) queryParts.push(`albumId=${encodeURIComponent(activeAlbumId.value)}`)
-    if (activeSection.value === 'favorites') queryParts.push('favorite=true')
-    if (search.value.trim()) queryParts.push(`q=${encodeURIComponent(search.value.trim())}`)
-    const query = queryParts.length ? `?${queryParts.join('&')}` : ''
-
     const [mediaResult, albumResult, tagResult] = await Promise.all([
-      api.listMedia(token.value, query),
+      api.listMedia(token.value, {
+        page: 1,
+        limit: mediaPageSize,
+        q: search.value.trim() || undefined,
+        favorite: activeSection.value === 'favorites',
+        albumId: activeAlbumId.value || undefined,
+        sortBy: mediaSortBy.value,
+        sortDir: mediaSortBy.value === 'name' ? 'asc' : 'desc',
+      }),
       api.listAlbums(token.value),
       api.listTags(token.value),
     ])
 
     if (runId !== loadAllRunId) return
 
-    media.value = mediaResult
+    media.value = mediaResult.items
+    mediaHasMore.value = mediaResult.hasMore
+    mediaTotal.value = mediaResult.total
     albums.value = albumResult
     tags.value = tagResult
 
-    const firstMedia = mediaResult.length > 0 ? mediaResult[0] : undefined
+    const firstMedia = mediaResult.items.length > 0 ? mediaResult.items[0] : undefined
     const canAutoSelectFirstMedia =
       !activeMedia.value &&
       !routeMediaId.value &&
@@ -2151,7 +2175,7 @@ async function loadAll(options: { clearGrid?: boolean } = {}) {
       activeMediaId.value = firstMedia.id
     }
 
-    await Promise.all(mediaResult.slice(0, 16).map((item) => loadThumb(item.id)))
+    await Promise.all(mediaResult.items.slice(0, 16).map((item) => loadThumb(item.id)))
   } catch (error) {
     if (runId !== loadAllRunId) return
     message.value = (error as Error).message
@@ -2159,6 +2183,41 @@ async function loadAll(options: { clearGrid?: boolean } = {}) {
     if (runId === loadAllRunId) {
       loading.value = false
     }
+  }
+}
+
+async function loadNextMediaPage() {
+  if (!token.value || routeMode.value !== 'app') return
+  if (loading.value || mediaLoadingMore.value || !mediaHasMore.value) return
+
+  mediaLoadingMore.value = true
+  const nextPage = mediaPage.value + 1
+
+  try {
+    const response = await api.listMedia(token.value, {
+      page: nextPage,
+      limit: mediaPageSize,
+      q: search.value.trim() || undefined,
+      favorite: activeSection.value === 'favorites',
+      albumId: activeAlbumId.value || undefined,
+      sortBy: mediaSortBy.value,
+      sortDir: mediaSortBy.value === 'name' ? 'asc' : 'desc',
+    })
+
+    const existingIds = new Set(media.value.map((item) => item.id))
+    const fresh = response.items.filter((item) => !existingIds.has(item.id))
+    if (fresh.length > 0) {
+      media.value = [...media.value, ...fresh]
+      await Promise.all(fresh.slice(0, 24).map((item) => loadThumb(item.id)))
+    }
+
+    mediaPage.value = nextPage
+    mediaHasMore.value = response.hasMore
+    mediaTotal.value = response.total
+  } catch (error) {
+    message.value = (error as Error).message
+  } finally {
+    mediaLoadingMore.value = false
   }
 }
 
@@ -3793,6 +3852,10 @@ function logout() {
   token.value = ''
   userName.value = ''
   media.value = []
+  mediaPage.value = 1
+  mediaHasMore.value = true
+  mediaTotal.value = 0
+  mediaLoadingMore.value = false
   activeMediaId.value = null
   lightboxOpen.value = false
   editModeOpen.value = false
@@ -3811,6 +3874,14 @@ watch([activeAlbumId, activeSection, search], ([nextAlbumId, nextSection], [prev
   const isContextSwitch = nextAlbumId !== prevAlbumId || nextSection !== prevSection
   void loadAll({ clearGrid: isContextSwitch })
 })
+
+watch(
+  () => mediaSortBy.value,
+  () => {
+    if (!token.value || routeMode.value !== 'app' || syncingFromRoute.value) return
+    void loadAll({ clearGrid: true })
+  },
+)
 
 watch(tags, (items) => {
   const allowed = new Set(items.map((tag) => tag.id))
@@ -4641,6 +4712,16 @@ onBeforeUnmount(() => {
             ></div>
           </div>
           <div v-if="marquee.active && !showGalleryLoadingState" class="marquee-box" :style="marqueeStyle"></div>
+
+          <div v-if="showGalleryPaginationState" class="gallery-pagination-state" aria-live="polite">
+            <template v-if="mediaLoadingMore">
+              <span class="gallery-loading-spinner" aria-hidden="true"></span>
+              <span>Loading more photos…</span>
+            </template>
+            <template v-else>
+              <span>Loaded {{ media.length }} of {{ mediaTotal || media.length }} photos</span>
+            </template>
+          </div>
 
           <div class="fab-wrap" @click.stop>
             <div v-if="fabMenuOpen" class="fab-menu">

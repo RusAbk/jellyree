@@ -415,67 +415,99 @@ export class MediaController {
     @Query('favorite') favorite?: string,
     @Query('tag') tag?: string,
     @Query('albumId') albumId?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortDir') sortDir?: string,
   ) {
     const pageNumber = toNumber(page, 1);
     const pageSize = clamp(toNumber(limit, 20), 1, 100);
     const offset = Math.max(pageNumber - 1, 0) * pageSize;
     const favoriteOnly = favorite === 'true';
 
-    const items = await this.prisma.media.findMany({
-      where: {
-        ownerId: req.user!.id,
-        ...(favoriteOnly ? { isFavorite: true } : {}),
-        ...(q
-          ? {
-              OR: [
-                { filename: { contains: q } },
-                {
-                  mediaTags: {
-                    some: {
-                      tag: {
-                        name: {
-                          contains: q.toLowerCase(),
-                        },
+    const where: Prisma.MediaWhereInput = {
+      ownerId: req.user!.id,
+      ...(favoriteOnly ? { isFavorite: true } : {}),
+      ...(q
+        ? {
+            OR: [
+              { filename: { contains: q } },
+              {
+                mediaTags: {
+                  some: {
+                    tag: {
+                      name: {
+                        contains: q.toLowerCase(),
                       },
                     },
                   },
                 },
-              ],
-            }
-          : {}),
-        ...(tag
-          ? {
-              mediaTags: {
-                some: {
-                  tag: { name: tag.toLowerCase() },
-                },
               },
-            }
-          : {}),
-        ...(albumId
-          ? {
-              albumMedia: {
-                some: { albumId },
+            ],
+          }
+        : {}),
+      ...(tag
+        ? {
+            mediaTags: {
+              some: {
+                tag: { name: tag.toLowerCase() },
               },
-            }
-          : {}),
-      },
-      orderBy: [{ capturedAt: 'desc' }, { createdAt: 'desc' }],
-      include: {
-        mediaTags: {
-          include: { tag: true },
-        },
-        albumMedia: true,
-        _count: {
-          select: { revisions: true },
-        },
-      },
-    });
+            },
+          }
+        : {}),
+      ...(albumId
+        ? {
+            albumMedia: {
+              some: { albumId },
+            },
+          }
+        : {}),
+    };
 
-    return items.map((item) => ({
+    const normalizedSortBy = sortBy === 'name' ? 'name' : 'date';
+    const normalizedSortDir = sortDir === 'asc' ? 'asc' : 'desc';
+
+    const orderBy: Prisma.MediaOrderByWithRelationInput[] =
+      normalizedSortBy === 'name'
+        ? [
+            { filename: normalizedSortDir },
+            { createdAt: 'desc' },
+          ]
+        : [
+            { metadataCreatedAt: normalizedSortDir },
+            { capturedAt: normalizedSortDir },
+            { createdAt: normalizedSortDir },
+          ];
+
+    const [items, total] = await Promise.all([
+      this.prisma.media.findMany({
+        where,
+        orderBy,
+        skip: offset,
+        take: pageSize,
+        include: {
+          mediaTags: {
+            include: { tag: true },
+          },
+          albumMedia: true,
+          _count: {
+            select: { revisions: true },
+          },
+        },
+      }),
+      this.prisma.media.count({ where }),
+    ]);
+
+    const mapped = items.map((item) => ({
       ...item,
       revisionCount: item._count.revisions,
     }));
+
+    return {
+      items: mapped,
+      page: pageNumber,
+      limit: pageSize,
+      total,
+      hasMore: offset + mapped.length < total,
+    };
   }
 
   @Post('upload')

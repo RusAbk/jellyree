@@ -51,6 +51,14 @@ export type Tag = {
   ownerId: string
 }
 
+export type MediaListResponse = {
+  items: MediaItem[]
+  page: number
+  limit: number
+  total: number
+  hasMore: boolean
+}
+
 export type ShareSettings = {
   enabled: boolean
   accessMode: 'link' | 'password'
@@ -98,7 +106,31 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   me: (token: string) => request('/auth/me', { method: 'GET' }, token),
-  listMedia: (token: string, query = '') => request<MediaItem[]>(`/media${query}`, {}, token),
+  listMedia: (
+    token: string,
+    params?: {
+      page?: number
+      limit?: number
+      q?: string
+      favorite?: boolean
+      tag?: string
+      albumId?: string
+      sortBy?: 'date' | 'name'
+      sortDir?: 'asc' | 'desc'
+    },
+  ) => {
+    const searchParams = new URLSearchParams()
+    if (params?.page) searchParams.set('page', String(params.page))
+    if (params?.limit) searchParams.set('limit', String(params.limit))
+    if (params?.q) searchParams.set('q', params.q)
+    if (params?.favorite) searchParams.set('favorite', 'true')
+    if (params?.tag) searchParams.set('tag', params.tag)
+    if (params?.albumId) searchParams.set('albumId', params.albumId)
+    if (params?.sortBy) searchParams.set('sortBy', params.sortBy)
+    if (params?.sortDir) searchParams.set('sortDir', params.sortDir)
+    const query = searchParams.toString()
+    return request<MediaListResponse>(`/media${query ? `?${query}` : ''}`, {}, token)
+  },
   uploadMedia: (
     token: string,
     files: File[],
