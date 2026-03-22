@@ -59,6 +59,9 @@ export type MediaListResponse = {
   hasMore: boolean
 }
 
+type MediaListLegacyResponse = MediaItem[]
+type MediaListApiResponse = MediaListResponse | MediaListLegacyResponse
+
 export type ShareSettings = {
   enabled: boolean
   accessMode: 'link' | 'password'
@@ -118,7 +121,7 @@ export const api = {
       sortBy?: 'date' | 'name'
       sortDir?: 'asc' | 'desc'
     },
-  ) => {
+  ): Promise<MediaListResponse> => {
     const searchParams = new URLSearchParams()
     if (params?.page) searchParams.set('page', String(params.page))
     if (params?.limit) searchParams.set('limit', String(params.limit))
@@ -129,7 +132,28 @@ export const api = {
     if (params?.sortBy) searchParams.set('sortBy', params.sortBy)
     if (params?.sortDir) searchParams.set('sortDir', params.sortDir)
     const query = searchParams.toString()
-    return request<MediaListResponse>(`/media${query ? `?${query}` : ''}`, {}, token)
+    return request<MediaListApiResponse>(`/media${query ? `?${query}` : ''}`, {}, token).then((response) => {
+      if (Array.isArray(response)) {
+        const page = params?.page ?? 1
+        const limit = params?.limit ?? response.length
+        return {
+          items: response,
+          page,
+          limit,
+          total: response.length,
+          hasMore: response.length >= limit,
+        }
+      }
+
+      const safeItems = Array.isArray(response.items) ? response.items : []
+      return {
+        items: safeItems,
+        page: typeof response.page === 'number' ? response.page : params?.page ?? 1,
+        limit: typeof response.limit === 'number' ? response.limit : params?.limit ?? safeItems.length,
+        total: typeof response.total === 'number' ? response.total : safeItems.length,
+        hasMore: typeof response.hasMore === 'boolean' ? response.hasMore : false,
+      }
+    })
   },
   uploadMedia: (
     token: string,
