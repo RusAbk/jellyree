@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -85,16 +86,18 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
+    const userCount = await this.prisma.user.count();
 
     const user = await this.prisma.user.create({
       data: {
         email,
         passwordHash,
         displayName,
+        isAdmin: userCount === 0,
       },
     });
 
-    return this.issueToken(user.id, user.email, user.displayName);
+    return this.issueToken(user.id, user.email, user.displayName, user.isAdmin);
   }
 
   async login(email: string, password: string) {
@@ -108,7 +111,37 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    return this.issueToken(user.id, user.email, user.displayName);
+    return this.issueToken(user.id, user.email, user.displayName, user.isAdmin);
+  }
+
+  async adminLogin(email: string, password: string) {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const isValid = await bcrypt.compare(password, user.passwordHash);
+    if (!isValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    let isAdmin = Boolean(user.isAdmin);
+    if (!isAdmin) {
+      const adminsCount = await this.prisma.user.count({ where: { isAdmin: true } });
+      if (adminsCount === 0) {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: { isAdmin: true },
+        });
+        isAdmin = true;
+      }
+    }
+
+    if (!isAdmin) {
+      throw new ForbiddenException('Admin access required');
+    }
+
+    return this.issueToken(user.id, user.email, user.displayName, true);
   }
 
   async me(userId: string) {
@@ -118,9 +151,133 @@ export class AuthService {
         id: true,
         email: true,
         displayName: true,
+        isAdmin: true,
+        maxTotalSizeBytes: true,
+        maxFileCount: true,
+        maxAlbumCount: true,
         createdAt: true,
       },
     });
+  }
+
+  async adminUsers(requesterId: string) {
+    await this.ensureAdmin(requesterId);
+
+    const [users, mediaStats, albumStats] = await Promise.all([
+      this.prisma.user.findMany({
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          isAdmin: true,
+          maxTotalSizeBytes: true,
+          maxFileCount: true,
+          maxAlbumCount: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.media.groupBy({
+        by: ['ownerId'],
+        _count: { _all: true },
+        _sum: { sizeBytes: true },
+      }),
+      this.prisma.album.groupBy({
+        by: ['ownerId'],
+        _count: { _all: true },
+      }),
+    ]);
+
+    const mediaByOwner = new Map(
+      mediaStats.map((entry) => [
+        entry.ownerId,
+        {
+          fileCount: Number(entry._count._all ?? 0),
+          totalSizeBytes: Number(entry._sum.sizeBytes ?? 0),
+        },
+      ]),
+    );
+
+    const albumByOwner = new Map(
+      albumStats.map((entry) => [entry.ownerId, Number(entry._count._all ?? 0)]),
+    );
+
+    return users.map((user) => {
+      const media = mediaByOwner.get(user.id) || { fileCount: 0, totalSizeBytes: 0 };
+      const albumCount = albumByOwner.get(user.id) ?? 0;
+      return {
+        ...user,
+        fileCount: media.fileCount,
+        albumCount,
+        totalSizeBytes: media.totalSizeBytes,
+      };
+    });
+  }
+
+  async updateUserLimits(
+    requesterId: string,
+    userId: string,
+    limits: {
+      maxTotalSizeBytes?: number | null;
+      maxFileCount?: number | null;
+      maxAlbumCount?: number | null;
+    },
+  ) {
+    await this.ensureAdmin(requesterId);
+
+    const data: {
+      maxTotalSizeBytes?: number | null;
+      maxFileCount?: number | null;
+      maxAlbumCount?: number | null;
+    } = {};
+
+    if ('maxTotalSizeBytes' in limits) {
+      data.maxTotalSizeBytes = this.normalizeLimit(limits.maxTotalSizeBytes, 'maxTotalSizeBytes');
+    }
+    if ('maxFileCount' in limits) {
+      data.maxFileCount = this.normalizeLimit(limits.maxFileCount, 'maxFileCount');
+    }
+    if ('maxAlbumCount' in limits) {
+      data.maxAlbumCount = this.normalizeLimit(limits.maxAlbumCount, 'maxAlbumCount');
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data,
+    });
+
+    const [user, mediaAggregate, albumCount] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          isAdmin: true,
+          maxTotalSizeBytes: true,
+          maxFileCount: true,
+          maxAlbumCount: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.media.aggregate({
+        where: { ownerId: userId },
+        _count: { id: true },
+        _sum: { sizeBytes: true },
+      }),
+      this.prisma.album.count({ where: { ownerId: userId } }),
+    ]);
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    return {
+      ...user,
+      fileCount: Number(mediaAggregate._count.id ?? 0),
+      albumCount: Number(albumCount),
+      totalSizeBytes: Number(mediaAggregate._sum.sizeBytes ?? 0),
+    };
   }
 
   async stats(userId: string) {
@@ -158,11 +315,35 @@ export class AuthService {
     };
   }
 
-  private async issueToken(id: string, email: string, displayName: string | null) {
+  private normalizeLimit(value: number | null | undefined, field: string) {
+    if (value === null || value === undefined) return null;
+    if (!Number.isFinite(value) || value < 0) {
+      throw new BadRequestException(`${field} must be a non-negative number or null`);
+    }
+    return Math.round(value);
+  }
+
+  private async ensureAdmin(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, isAdmin: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    if (!user.isAdmin) {
+      throw new ForbiddenException('Admin access required');
+    }
+  }
+
+  private async issueToken(id: string, email: string, displayName: string | null, isAdmin: boolean) {
     const accessToken = await this.jwtService.signAsync({
       sub: id,
       email,
       displayName,
+      isAdmin,
     });
 
     return {
@@ -171,6 +352,7 @@ export class AuthService {
         id,
         email,
         displayName,
+        isAdmin,
       },
     };
   }

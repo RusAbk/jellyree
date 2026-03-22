@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { api, type AccountStats, type Album, type MediaItem, type MeProfile, type Tag } from './api'
+import { api, type AccountStats, type AdminUserOverview, type Album, type MediaItem, type MeProfile, type Tag } from './api'
 import AlbumTreeSelect from './components/AlbumTreeSelect.vue'
 
 type AlbumTreeNode = {
@@ -58,7 +58,7 @@ const APP_VIEW_STATE_KEY = 'jellyree_app_view_state'
 
 const token = ref(localStorage.getItem('jellyree_token') || '')
 const userName = ref(localStorage.getItem('jellyree_user') || '')
-const mode = ref<'login' | 'register'>('login')
+const mode = ref<'login' | 'register' | 'admin-login'>('login')
 const authForm = reactive({
   email: '',
   password: '',
@@ -88,6 +88,10 @@ const accountPageOpen = ref(false)
 const accountLoading = ref(false)
 const accountProfile = ref<MeProfile | null>(null)
 const accountStats = ref<AccountStats | null>(null)
+const adminPageOpen = ref(false)
+const adminLoading = ref(false)
+const adminUsers = ref<AdminUserOverview[]>([])
+const adminDraftLimits = ref<Record<string, { maxTotalSizeBytes: string; maxFileCount: string; maxAlbumCount: string }>>({})
 const routeMode = ref<'app' | 'public-media' | 'public-album'>('app')
 const routeToken = ref('')
 const routeAlbumId = ref<string | null>(null)
@@ -1237,6 +1241,151 @@ async function openAccountPage() {
     message.value = (error as Error).message
   } finally {
     accountLoading.value = false
+  }
+}
+
+async function refreshAccountSnapshot() {
+  if (!token.value) return null
+  const [profile, stats] = await Promise.all([
+    api.me(token.value),
+    api.accountStats(token.value),
+  ])
+  accountProfile.value = profile
+  accountStats.value = stats
+  return { profile, stats }
+}
+
+function createAdminDraftFromUsers(users: AdminUserOverview[]) {
+  const next: Record<string, { maxTotalSizeBytes: string; maxFileCount: string; maxAlbumCount: string }> = {}
+  for (const user of users) {
+    next[user.id] = {
+      maxTotalSizeBytes: user.maxTotalSizeBytes == null ? '' : String(user.maxTotalSizeBytes),
+      maxFileCount: user.maxFileCount == null ? '' : String(user.maxFileCount),
+      maxAlbumCount: user.maxAlbumCount == null ? '' : String(user.maxAlbumCount),
+    }
+  }
+  adminDraftLimits.value = next
+}
+
+async function openAdminPage() {
+  if (!token.value || !accountProfile.value?.isAdmin) return
+  adminPageOpen.value = true
+  adminLoading.value = true
+  message.value = ''
+
+  try {
+    const users = await api.adminUsers(token.value)
+    adminUsers.value = users
+    createAdminDraftFromUsers(users)
+  } catch (error) {
+    message.value = (error as Error).message
+  } finally {
+    adminLoading.value = false
+  }
+}
+
+function closeAdminPage() {
+  adminPageOpen.value = false
+}
+
+function parseLimitDraft(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = Number(trimmed)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error('Limit values must be non-negative numbers or empty for unlimited')
+  }
+  return Math.round(parsed)
+}
+
+function setAdminLimitUnlimited(userId: string, field: 'maxTotalSizeBytes' | 'maxFileCount' | 'maxAlbumCount') {
+  const draft = getAdminDraft(userId)
+  draft[field] = ''
+}
+
+function getAdminDraft(userId: string) {
+  if (!adminDraftLimits.value[userId]) {
+    adminDraftLimits.value[userId] = {
+      maxTotalSizeBytes: '',
+      maxFileCount: '',
+      maxAlbumCount: '',
+    }
+  }
+
+  return adminDraftLimits.value[userId]
+}
+
+async function saveAdminLimits(userId: string) {
+  if (!token.value) return
+  const draft = getAdminDraft(userId)
+
+  try {
+    const updated = await api.updateUserLimits(token.value, userId, {
+      maxTotalSizeBytes: parseLimitDraft(draft.maxTotalSizeBytes),
+      maxFileCount: parseLimitDraft(draft.maxFileCount),
+      maxAlbumCount: parseLimitDraft(draft.maxAlbumCount),
+    })
+
+    adminUsers.value = adminUsers.value.map((item) => (item.id === userId ? updated : item))
+    createAdminDraftFromUsers(adminUsers.value)
+    message.value = 'User limits updated'
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
+function estimateNewAlbumsFromRelativePaths(relativePaths: string[], baseAlbumId: string | null) {
+  const existing = new Set<string>()
+  for (const album of albums.value) {
+    const key = `${album.parentId || 'root'}::${album.name.trim().toLowerCase()}`
+    existing.add(key)
+  }
+
+  let created = 0
+
+  for (const relativePath of relativePaths) {
+    const pathParts = relativePath
+      .split(/[\\/]+/)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0 && part !== '.' && part !== '..')
+
+    const folderParts = pathParts.length > 1 ? pathParts.slice(0, -1) : []
+    let parentId = baseAlbumId || null
+
+    for (const folder of folderParts) {
+      const normalizedName = folder.trim()
+      if (!normalizedName) continue
+      const key = `${parentId || 'root'}::${normalizedName.toLowerCase()}`
+      if (!existing.has(key)) {
+        existing.add(key)
+        created += 1
+      }
+
+      const existingAlbum = albums.value.find(
+        (album) => (album.parentId || null) === parentId && album.name.trim().toLowerCase() === normalizedName.toLowerCase(),
+      )
+      parentId = existingAlbum?.id || `new:${key}`
+    }
+  }
+
+  return created
+}
+
+async function assertWithinLimits(fileDelta: number, sizeDeltaBytes: number, albumDelta: number) {
+  const snapshot = await refreshAccountSnapshot()
+  if (!snapshot) return
+
+  const { profile, stats } = snapshot
+  if (profile.maxFileCount != null && stats.fileCount + fileDelta > profile.maxFileCount) {
+    throw new Error(`File limit reached (${profile.maxFileCount}). Delete files or request unlimited.`)
+  }
+
+  if (profile.maxTotalSizeBytes != null && stats.totalSizeBytes + sizeDeltaBytes > profile.maxTotalSizeBytes) {
+    throw new Error(`Storage limit reached (${formatFileSize(profile.maxTotalSizeBytes)}). Free space or request unlimited.`)
+  }
+
+  if (profile.maxAlbumCount != null && stats.albumCount + albumDelta > profile.maxAlbumCount) {
+    throw new Error(`Album limit reached (${profile.maxAlbumCount}). Delete albums or request unlimited.`)
   }
 }
 
@@ -2979,10 +3128,13 @@ async function uploadFiles(files: FileList | null) {
   if (!files || files.length === 0 || !token.value) return
   const list = Array.from(files)
   const relativePaths = list.map((file) => file.webkitRelativePath || file.name)
-  startUploadProgress(list.length)
-  message.value = `Uploading ${list.length} files...`
 
   try {
+    const totalSizeBytes = list.reduce((sum, file) => sum + file.size, 0)
+    await assertWithinLimits(list.length, totalSizeBytes, 0)
+    startUploadProgress(list.length)
+    message.value = `Uploading ${list.length} files...`
+
     await api.uploadMedia(authHeaders(), list, relativePaths, {
       albumId: activeAlbumId.value || undefined,
       fileLastModifieds: list.map((file) => file.lastModified),
@@ -3085,10 +3237,17 @@ async function handleDrop(event: DragEvent) {
 
   const { files, relativePaths, hasFolders } = await collectDroppedFiles(event)
   if (files.length === 0) return
-  startUploadProgress(files.length)
-  message.value = `Uploading ${files.length} files...`
 
   try {
+    const totalSizeBytes = files.reduce((sum, file) => sum + file.size, 0)
+    const albumDelta = hasFolders
+      ? estimateNewAlbumsFromRelativePaths(relativePaths, activeAlbumId.value || null)
+      : 0
+    await assertWithinLimits(files.length, totalSizeBytes, albumDelta)
+
+    startUploadProgress(files.length)
+    message.value = `Uploading ${files.length} files...`
+
     await api.uploadMedia(authHeaders(), files, relativePaths, {
       albumId: activeAlbumId.value || undefined,
       createAlbumsFromFolders: hasFolders,
@@ -3483,6 +3642,7 @@ async function createAlbum() {
   if (!createAlbumName.value.trim() || !token.value) return
   createAlbumBusy.value = true
   try {
+    await assertWithinLimits(0, 0, 1)
     await api.createAlbum(authHeaders(), createAlbumName.value.trim(), undefined, activeAlbumId.value || null)
     createAlbumName.value = ''
     createAlbumDialogOpen.value = false
@@ -4189,6 +4349,11 @@ async function submitAuth() {
             password: authForm.password,
             displayName: authForm.displayName,
           })
+        : mode.value === 'admin-login'
+          ? await api.adminLogin({
+              email: authForm.email,
+              password: authForm.password,
+            })
         : await api.login({
             email: authForm.email,
             password: authForm.password,
@@ -4198,6 +4363,11 @@ async function submitAuth() {
     userName.value = payload.user.displayName || payload.user.email
     localStorage.setItem('jellyree_token', payload.accessToken)
     localStorage.setItem('jellyree_user', userName.value)
+    try {
+      accountProfile.value = await api.me(payload.accessToken)
+    } catch {
+      accountProfile.value = null
+    }
     await applyRouteFromLocation()
   } catch (error) {
     message.value = (error as Error).message
@@ -4214,6 +4384,10 @@ function logout() {
   accountLoading.value = false
   accountProfile.value = null
   accountStats.value = null
+  adminPageOpen.value = false
+  adminLoading.value = false
+  adminUsers.value = []
+  adminDraftLimits.value = {}
   token.value = ''
   userName.value = ''
   media.value = []
@@ -4516,6 +4690,9 @@ onBeforeUnmount(() => {
           <button class="chip" :class="{ active: mode === 'register' }" @click="mode = 'register'">
             Register
           </button>
+          <button class="chip" :class="{ active: mode === 'admin-login' }" @click="mode = 'admin-login'">
+            Admin
+          </button>
         </div>
         <form class="auth-form" @submit.prevent="submitAuth">
           <input v-model="authForm.email" class="input" placeholder="Email" />
@@ -4527,7 +4704,7 @@ onBeforeUnmount(() => {
             placeholder="Display name"
           />
           <button class="btn full" type="submit">
-            {{ mode === 'register' ? 'Create account' : 'Sign in' }}
+            {{ mode === 'register' ? 'Create account' : (mode === 'admin-login' ? 'Sign in as admin' : 'Sign in') }}
           </button>
         </form>
         <div v-if="message" class="muted">{{ message }}</div>
@@ -4553,6 +4730,7 @@ onBeforeUnmount(() => {
           <button class="chip hamburger-btn mobile-only" @click="toggleMobileUserMenu">
             <i class="ri-menu-line" aria-hidden="true"></i>
           </button>
+          <button v-if="accountProfile?.isAdmin" class="chip desktop-only" @click="openAdminPage">Admin</button>
           <button class="chip desktop-only" @click="openAccountPage">Account</button>
           <button class="btn ghost desktop-only" @click="logout">Logout</button>
           <input
@@ -4600,6 +4778,10 @@ onBeforeUnmount(() => {
             <button class="mobile-screen-item" @click="closeMobileUserMenu(); void openAccountPage()">
               <i class="ri-user-3-line" aria-hidden="true"></i>
               <span>Account</span>
+            </button>
+            <button v-if="accountProfile?.isAdmin" class="mobile-screen-item" @click="closeMobileUserMenu(); void openAdminPage()">
+              <i class="ri-shield-user-line" aria-hidden="true"></i>
+              <span>Admin panel</span>
             </button>
             <button class="mobile-screen-item" :disabled="selectedCount < 2" @click="openMobileMenuScreen('bulk')">
               <i class="ri-stack-line" aria-hidden="true"></i>
@@ -5806,6 +5988,57 @@ onBeforeUnmount(() => {
               <div class="account-profile-row"><span>Email</span><strong>{{ accountProfile?.email || '—' }}</strong></div>
               <div class="account-profile-row"><span>Created</span><strong>{{ formatDateLabel(accountProfile?.createdAt || null) }}</strong></div>
               <div class="account-profile-row" v-if="accountStats"><span>Data completeness</span><strong>{{ accountStats.isBackfilled ? 'complete' : 'partial' }}</strong></div>
+            </article>
+          </div>
+        </section>
+      </div>
+
+      <div v-if="adminPageOpen" class="account-page" @click.self="closeAdminPage">
+        <section class="account-page-shell shell admin-page-shell">
+          <div class="account-page-head">
+            <div>
+              <div class="gallery-title">Admin panel</div>
+              <div class="muted">Users, usage stats and storage limits</div>
+            </div>
+            <button class="chip" @click="closeAdminPage">Close</button>
+          </div>
+
+          <div v-if="adminLoading" class="muted">Loading users...</div>
+
+          <div v-else class="admin-users-list">
+            <article v-for="user in adminUsers" :key="`admin-user-${user.id}`" class="account-card admin-user-card">
+              <div class="account-card-label">{{ user.displayName || user.email }}</div>
+              <div class="muted">{{ user.email }} · {{ user.isAdmin ? 'admin' : 'user' }}</div>
+
+              <div class="admin-user-stats">
+                <div class="account-profile-row"><span>Files</span><strong>{{ user.fileCount }}</strong></div>
+                <div class="account-profile-row"><span>Albums</span><strong>{{ user.albumCount }}</strong></div>
+                <div class="account-profile-row"><span>Storage used</span><strong>{{ formatFileSize(user.totalSizeBytes) }}</strong></div>
+              </div>
+
+              <div class="admin-limits-grid">
+                <label class="field admin-limit-field">
+                  <span>Max storage (bytes)</span>
+                  <input v-model="getAdminDraft(user.id).maxTotalSizeBytes" class="input" placeholder="Unlimited" />
+                  <button class="chip" type="button" @click="setAdminLimitUnlimited(user.id, 'maxTotalSizeBytes')">Unlimited</button>
+                </label>
+
+                <label class="field admin-limit-field">
+                  <span>Max file count</span>
+                  <input v-model="getAdminDraft(user.id).maxFileCount" class="input" placeholder="Unlimited" />
+                  <button class="chip" type="button" @click="setAdminLimitUnlimited(user.id, 'maxFileCount')">Unlimited</button>
+                </label>
+
+                <label class="field admin-limit-field">
+                  <span>Max album count</span>
+                  <input v-model="getAdminDraft(user.id).maxAlbumCount" class="input" placeholder="Unlimited" />
+                  <button class="chip" type="button" @click="setAdminLimitUnlimited(user.id, 'maxAlbumCount')">Unlimited</button>
+                </label>
+              </div>
+
+              <div class="row-actions">
+                <button class="btn" @click="saveAdminLimits(user.id)">Save limits</button>
+              </div>
             </article>
           </div>
         </section>

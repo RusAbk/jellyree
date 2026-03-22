@@ -8,6 +8,7 @@ export type AuthResult = {
     id: string
     email: string
     displayName: string | null
+    isAdmin?: boolean
   }
 }
 
@@ -15,6 +16,24 @@ export type MeProfile = {
   id: string
   email: string
   displayName: string | null
+  isAdmin: boolean
+  maxTotalSizeBytes: number | null
+  maxFileCount: number | null
+  maxAlbumCount: number | null
+  createdAt: string
+}
+
+export type AdminUserOverview = {
+  id: string
+  email: string
+  displayName: string | null
+  isAdmin: boolean
+  maxTotalSizeBytes: number | null
+  maxFileCount: number | null
+  maxAlbumCount: number | null
+  fileCount: number
+  albumCount: number
+  totalSizeBytes: number
   createdAt: string
 }
 
@@ -125,8 +144,31 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  adminLogin: (payload: { email: string; password: string }) =>
+    request<AuthResult>('/auth/admin/login', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   me: (token: string) => request<MeProfile>('/auth/me', { method: 'GET' }, token),
   accountStats: (token: string) => request<AccountStats>('/auth/stats', { method: 'GET' }, token),
+  adminUsers: (token: string) => request<AdminUserOverview[]>('/auth/admin/users', { method: 'GET' }, token),
+  updateUserLimits: (
+    token: string,
+    userId: string,
+    payload: {
+      maxTotalSizeBytes?: number | null
+      maxFileCount?: number | null
+      maxAlbumCount?: number | null
+    },
+  ) =>
+    request<AdminUserOverview>(
+      `/auth/admin/users/${encodeURIComponent(userId)}/limits`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      token,
+    ),
   listMedia: (
     token: string,
     params?: {

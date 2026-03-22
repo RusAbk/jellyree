@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE `User`
+  ADD COLUMN `isAdmin` BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN `maxTotalSizeBytes` INTEGER NULL,
+  ADD COLUMN `maxFileCount` INTEGER NULL,
+  ADD COLUMN `maxAlbumCount` INTEGER NULL;

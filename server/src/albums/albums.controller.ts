@@ -11,6 +11,28 @@ import * as bcrypt from 'bcrypt';
 export class AlbumsController {
   constructor(private readonly prisma: PrismaService) {}
 
+  private async ensureCanCreateAlbums(ownerId: string, delta: number) {
+    if (delta <= 0) return;
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { id: true, maxAlbumCount: true },
+    });
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    if (user.maxAlbumCount == null) return;
+
+    const currentAlbumCount = await this.prisma.album.count({ where: { ownerId } });
+    if (currentAlbumCount + delta > user.maxAlbumCount) {
+      throw new BadRequestException(
+        `Album limit reached (${user.maxAlbumCount}). Delete albums or set unlimited in admin panel.`,
+      );
+    }
+  }
+
   @Get()
   async list(@Req() req: RequestWithUser) {
     const albums = await this.prisma.album.findMany({
@@ -69,10 +91,12 @@ export class AlbumsController {
   }
 
   @Post()
-  create(
+  async create(
     @Req() req: RequestWithUser,
     @Body() body: { name: string; description?: string; parentId?: string | null },
   ) {
+    await this.ensureCanCreateAlbums(req.user!.id, 1);
+
     return this.prisma.album.create({
       data: {
         ownerId: req.user!.id,

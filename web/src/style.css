@@ -2024,6 +2024,12 @@ label {
   padding: 18px;
 }
 
+.admin-page-shell {
+  width: min(1080px, 100%);
+  max-height: min(86vh, 920px);
+  overflow: auto;
+}
+
 .account-page-head {
   display: flex;
   align-items: center;
@@ -2077,6 +2083,39 @@ label {
 
 .account-profile-row:last-child {
   border-bottom: none;
+}
+
+.admin-users-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.admin-user-card {
+  gap: 10px;
+}
+
+.admin-user-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.admin-limits-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.admin-limit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-limit-field > span {
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 .overlay-content {
@@ -2927,6 +2966,11 @@ label {
     justify-content: flex-start;
   }
 
+  .admin-user-stats,
+  .admin-limits-grid {
+    grid-template-columns: 1fr;
+  }
+
   .row-actions {
     display: flex;
     flex-wrap: wrap;
@@ -3145,6 +3189,10 @@ label {
     border-radius: 12px;
     padding: 14px;
     gap: 10px;
+  }
+
+  .auth-switch {
+    flex-wrap: wrap;
   }
 
   .brand-mark {

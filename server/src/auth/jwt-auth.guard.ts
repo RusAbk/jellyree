@@ -12,6 +12,7 @@ export type RequestWithUser = Request & {
     id: string;
     email?: string;
     displayName?: string | null;
+    isAdmin?: boolean;
   };
 };
 
@@ -37,11 +38,13 @@ export class JwtAuthGuard implements CanActivate {
         sub: string;
         email: string;
         displayName: string | null;
+        isAdmin?: boolean;
       }>(token);
       request.user = {
         id: payload.sub,
         email: payload.email,
         displayName: payload.displayName,
+        isAdmin: Boolean(payload.isAdmin),
       };
       return true;
     } catch {

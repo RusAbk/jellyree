@@ -24,6 +24,10 @@ model User {
   email        String   @unique
   passwordHash String
   displayName  String?
+  isAdmin      Boolean  @default(false)
+  maxTotalSizeBytes Int?
+  maxFileCount Int?
+  maxAlbumCount Int?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

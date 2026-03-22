@@ -284,6 +284,70 @@ export class MediaController {
     );
   }
 
+  private async ensureCanCreateFiles(ownerId: string, fileCountDelta: number, sizeDeltaBytes: number) {
+    if (fileCountDelta <= 0 && sizeDeltaBytes <= 0) return;
+
+    const [user, usage] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: ownerId },
+        select: {
+          id: true,
+          maxFileCount: true,
+          maxTotalSizeBytes: true,
+        },
+      }),
+      this.prisma.media.aggregate({
+        where: { ownerId },
+        _count: { id: true },
+        _sum: { sizeBytes: true },
+      }),
+    ]);
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    const currentFileCount = Number(usage._count.id ?? 0);
+    const currentSizeBytes = Number(usage._sum.sizeBytes ?? 0);
+
+    if (user.maxFileCount != null && currentFileCount + fileCountDelta > user.maxFileCount) {
+      throw new BadRequestException(
+        `File count limit reached (${user.maxFileCount}). Delete files or set unlimited in admin panel.`,
+      );
+    }
+
+    if (
+      user.maxTotalSizeBytes != null &&
+      currentSizeBytes + Math.max(0, sizeDeltaBytes) > user.maxTotalSizeBytes
+    ) {
+      throw new BadRequestException(
+        `Storage limit reached (${user.maxTotalSizeBytes} bytes). Free space or set unlimited in admin panel.`,
+      );
+    }
+  }
+
+  private async ensureCanCreateAlbums(ownerId: string, albumCountDelta: number) {
+    if (albumCountDelta <= 0) return;
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { id: true, maxAlbumCount: true },
+    });
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    if (user.maxAlbumCount == null) return;
+
+    const currentAlbumCount = await this.prisma.album.count({ where: { ownerId } });
+    if (currentAlbumCount + albumCountDelta > user.maxAlbumCount) {
+      throw new BadRequestException(
+        `Album limit reached (${user.maxAlbumCount}). Delete albums or set unlimited in admin panel.`,
+      );
+    }
+  }
+
   private normalizeDownloadFileName(name: string) {
     const fallback = 'file';
     const sanitized = name
@@ -602,6 +666,9 @@ export class MediaController {
       throw new BadRequestException('No files uploaded');
     }
 
+    const createAlbumsFromFolders =
+      body.createAlbumsFromFolders === true || body.createAlbumsFromFolders === 'true';
+
     const dedupedUploads: Array<{
       file: Express.Multer.File;
       relativePath: string;
@@ -643,11 +710,14 @@ export class MediaController {
       }
     }
 
+    const ownerId = req.user!.id;
+    const uploadedTotalSizeBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    await this.ensureCanCreateFiles(ownerId, files.length, uploadedTotalSizeBytes);
+
     const uploadMetadata = await Promise.all(
       (files || []).map((file) => this.readUploadMetadata(file.filename, file.mimetype)),
     );
 
-    const ownerId = req.user!.id;
     const tempFilePaths = (files || []).map((file) => resolve(tempUploadRoot, file.filename));
 
     try {
@@ -712,9 +782,6 @@ export class MediaController {
 
     await Promise.all(tempFilePaths.map((path) => unlink(path).catch(() => undefined)));
 
-    const createAlbumsFromFolders =
-      body.createAlbumsFromFolders === true || body.createAlbumsFromFolders === 'true';
-
     if (createAlbumsFromFolders && created.length > 0) {
       const albumCache = new Map<string, string>();
 
@@ -737,6 +804,8 @@ export class MediaController {
           albumCache.set(cacheKey, existing.id);
           return existing.id;
         }
+
+        await this.ensureCanCreateAlbums(ownerId, 1);
 
         const createdAlbum = await this.prisma.album.create({
           data: {
@@ -1267,6 +1336,8 @@ export class MediaController {
       return { error: 'Not found' };
     }
 
+    await this.ensureCanCreateFiles(req.user!.id, 1, source.sizeBytes);
+
     const sourceBody = await this.getObjectBufferFromR2(req.user!.id, source.filePath);
     const storageExtension = extname(source.filePath) || extname(source.filename) || '.bin';
     const copyStoragePath = `${randomUUID()}${storageExtension}`;
@@ -1368,6 +1439,7 @@ export class MediaController {
       .toBuffer();
 
     const convertedMeta = await sharp(convertedBuffer, { failOn: 'none' }).metadata();
+    await this.ensureCanCreateFiles(req.user!.id, 1, convertedBuffer.byteLength);
     const convertedStoragePath = `${randomUUID()}.jpg`;
     const convertedFilename = this.buildJpegFilename(source.filename);
 

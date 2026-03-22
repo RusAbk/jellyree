@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Headers,
+  Param,
   Post,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -39,6 +40,17 @@ export class AuthController {
     return this.authService.login(body.email, body.password);
   }
 
+  @Post('admin/login')
+  adminLogin(
+    @Body()
+    body: {
+      email: string;
+      password: string;
+    },
+  ) {
+    return this.authService.adminLogin(body.email, body.password);
+  }
+
   @Get('me')
   async me(@Headers('authorization') authorization?: string) {
     const userId = await this.resolveUserIdFromAuthorization(authorization);
@@ -53,6 +65,31 @@ export class AuthController {
   async stats(@Headers('authorization') authorization?: string) {
     const userId = await this.resolveUserIdFromAuthorization(authorization);
     return this.authService.stats(userId);
+  }
+
+  @Get('admin/users')
+  async adminUsers(@Headers('authorization') authorization?: string) {
+    const userId = await this.resolveUserIdFromAuthorization(authorization);
+    return this.authService.adminUsers(userId);
+  }
+
+  @Post('admin/users/:id/limits')
+  async updateUserLimits(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') id: string,
+    @Body()
+    body: {
+      maxTotalSizeBytes?: number | null;
+      maxFileCount?: number | null;
+      maxAlbumCount?: number | null;
+    },
+  ) {
+    const requesterId = await this.resolveUserIdFromAuthorization(authorization);
+    return this.authService.updateUserLimits(requesterId, id, {
+      maxTotalSizeBytes: body.maxTotalSizeBytes,
+      maxFileCount: body.maxFileCount,
+      maxAlbumCount: body.maxAlbumCount,
+    });
   }
 
   private async resolveUserIdFromAuthorization(authorization?: string) {
