@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api, type Album, type MediaItem, type Tag } from './api'
+import AlbumTreeSelect from './components/AlbumTreeSelect.vue'
 
 type AlbumTreeNode = {
   album: Album
@@ -4006,12 +4007,13 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else class="mobile-screen-scroll">
-            <select v-model="bulkTargetAlbumId" class="input bulk-select">
-              <option value="">Move selected to album…</option>
-              <option v-for="album in albums" :key="`menu-bulk-${album.id}`" :value="album.id">
-                {{ album.name }}
-              </option>
-            </select>
+            <AlbumTreeSelect
+              v-model="bulkTargetAlbumId"
+              :albums="albums"
+              class="bulk-select"
+              placeholder="Move selected to album..."
+              empty-option-label="Move selected to album..."
+            />
             <button class="mobile-screen-item" :disabled="selectedCount === 0 || !bulkTargetAlbumId" @click="bulkMoveSelectedToAlbum; closeMobileUserMenu()">
               <i class="ri-folder-transfer-line" aria-hidden="true"></i>
               <span>Move selected</span>
@@ -4184,12 +4186,13 @@ onBeforeUnmount(() => {
                   <option value="name">Name</option>
                 </select>
               </label>
-              <select v-model="bulkTargetAlbumId" class="input bulk-select">
-                <option value="">Move selected to album…</option>
-                <option v-for="album in albums" :key="`bulk-${album.id}`" :value="album.id">
-                  {{ album.name }}
-                </option>
-              </select>
+              <AlbumTreeSelect
+                v-model="bulkTargetAlbumId"
+                :albums="albums"
+                class="bulk-select"
+                placeholder="Move selected to album..."
+                empty-option-label="Move selected to album..."
+              />
               <button class="btn ghost" :disabled="selectedCount === 0 || !bulkTargetAlbumId" @click="bulkMoveSelectedToAlbum">
                 Move selected
               </button>
@@ -4496,17 +4499,15 @@ onBeforeUnmount(() => {
             >
               {{ activeMediaAlbum?.name || '—' }}
             </div>
-            <select
+            <AlbumTreeSelect
               v-else
               v-model="targetAlbumId"
-              class="input"
-              @change="commitDetailsFieldEdit('album')"
+              :albums="albums"
+              placeholder="Select album"
+              empty-option-label="Select album"
+              @update:modelValue="commitDetailsFieldEdit('album')"
               @blur="commitDetailsFieldEdit('album')"
-              @keydown.esc.prevent="cancelDetailsFieldEdit('album')"
-            >
-              <option value="">Select album</option>
-              <option v-for="album in albums" :key="album.id" :value="album.id">{{ album.name }}</option>
-            </select>
+            />
           </div>
 
           <div class="field">
