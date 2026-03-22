@@ -17,6 +17,8 @@ export type MeProfile = {
   email: string
   displayName: string | null
   isAdmin: boolean
+  isFrozen: boolean
+  deletedAt: string | null
   maxTotalSizeBytes: number | null
   maxFileCount: number | null
   maxAlbumCount: number | null
@@ -28,6 +30,8 @@ export type AdminUserOverview = {
   email: string
   displayName: string | null
   isAdmin: boolean
+  isFrozen: boolean
+  deletedAt: string | null
   maxTotalSizeBytes: number | null
   maxFileCount: number | null
   maxAlbumCount: number | null
@@ -65,6 +69,11 @@ export type MediaItem = {
   latitude: number | null
   longitude: number | null
   revisionCount?: number
+  isArchived?: boolean
+  archivedAt?: string | null
+  archivedFromOwnerId?: string | null
+  archivedFromDisplayName?: string | null
+  archivedFromEmail?: string | null
   createdAt: string
   updatedAt: string
   mediaTags: Array<{ tag: { id: string; name: string } }>
@@ -169,6 +178,39 @@ export const api = {
       },
       token,
     ),
+  freezeUser: (token: string, userId: string, frozen: boolean) =>
+    request<AdminUserOverview[]>(
+      `/auth/admin/users/${encodeURIComponent(userId)}/freeze`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ frozen }),
+      },
+      token,
+    ),
+  removeUser: (token: string, userId: string, mode: 'delete-files' | 'archive-files') =>
+    request<AdminUserOverview[]>(
+      `/auth/admin/users/${encodeURIComponent(userId)}/remove`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ mode }),
+      },
+      token,
+    ),
+  adminArchiveMedia: (token: string) =>
+    request<MediaItem[]>('/media/admin/archive', { method: 'GET' }, token),
+  fetchAdminArchiveFileBlob: async (token: string, mediaId: string) => {
+    const response = await fetch(`${API_BASE}/media/admin/archive/${encodeURIComponent(mediaId)}/file`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error('Cannot load archived file')
+    }
+
+    return response.blob()
+  },
   listMedia: (
     token: string,
     params?: {

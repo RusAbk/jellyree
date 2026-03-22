@@ -348,6 +348,17 @@ export class MediaController {
     }
   }
 
+  private async ensureAdminAccess(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, isAdmin: true },
+    });
+
+    if (!user || !user.isAdmin) {
+      throw new BadRequestException('Admin access required');
+    }
+  }
+
   private normalizeDownloadFileName(name: string) {
     const fallback = 'file';
     const sanitized = name
@@ -518,6 +529,7 @@ export class MediaController {
 
     const where: Prisma.MediaWhereInput = {
       ownerId: req.user!.id,
+      isArchived: false,
       ...(favoriteOnly ? { isFavorite: true } : {}),
       ...(q
         ? {
@@ -852,6 +864,48 @@ export class MediaController {
     }
 
     return { ok: true, created };
+  }
+
+  @Get('admin/archive')
+  async listArchived(@Req() req: RequestWithUser) {
+    await this.ensureAdminAccess(req.user!.id);
+
+    return this.prisma.media.findMany({
+      where: { isArchived: true },
+      orderBy: { archivedAt: 'desc' },
+      include: {
+        mediaTags: { include: { tag: true } },
+        albumMedia: true,
+      },
+      take: 300,
+    });
+  }
+
+  @Get('admin/archive/:id/file')
+  async archivedFile(
+    @Req() req: RequestWithUser,
+    @Param('id') id: string,
+    @Res() response: Response,
+  ) {
+    await this.ensureAdminAccess(req.user!.id);
+
+    const media = await this.prisma.media.findFirst({
+      where: { id, isArchived: true },
+      select: { id: true, ownerId: true, filePath: true, mimeType: true },
+    });
+
+    if (!media) {
+      return response.status(404).json({ error: 'Not found' });
+    }
+
+    try {
+      const body = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+      response.setHeader('Content-Type', media.mimeType || 'application/octet-stream');
+      response.setHeader('Content-Length', String(body.byteLength));
+      return response.send(body);
+    } catch {
+      return response.status(404).json({ error: 'File not found in storage' });
+    }
   }
 
   @Get(':id/file')

@@ -2118,6 +2118,31 @@ label {
   color: var(--text-dim);
 }
 
+.admin-archive-card {
+  gap: 10px;
+}
+
+.admin-archive-list {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-archive-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.82);
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-archive-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
 .overlay-content {
   width: min(1520px, 100vw);
   max-width: 100vw;
@@ -2969,6 +2994,11 @@ label {
   .admin-user-stats,
   .admin-limits-grid {
     grid-template-columns: 1fr;
+  }
+
+  .admin-archive-row {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .row-actions {

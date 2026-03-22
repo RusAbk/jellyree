@@ -7,7 +7,12 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
-import { ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { randomUUID } from 'crypto';
 
 const r2AccountId = process.env.R2_ACCOUNT_ID || '';
 const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID || '';
@@ -79,6 +84,24 @@ export class AuthService {
     };
   }
 
+  private async deleteObjectsFromR2(ownerId: string, filePaths: string[]) {
+    const client = this.getR2Client();
+    if (!client || filePaths.length === 0) return;
+
+    await Promise.all(
+      filePaths.map((filePath) =>
+        client
+          .send(
+            new DeleteObjectCommand({
+              Bucket: r2BucketName,
+              Key: `${ownerId}/${String(filePath).replace(/^\/+/, '')}`,
+            }),
+          )
+          .catch(() => undefined),
+      ),
+    );
+  }
+
   async register(email: string, password: string, displayName?: string) {
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) {
@@ -86,7 +109,7 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const userCount = await this.prisma.user.count();
+    const userCount = await this.prisma.user.count({ where: { deletedAt: null } });
 
     const user = await this.prisma.user.create({
       data: {
@@ -111,6 +134,14 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    if (user.deletedAt) {
+      throw new ForbiddenException('Account was deleted');
+    }
+
+    if (user.isFrozen) {
+      throw new ForbiddenException('Account is frozen');
+    }
+
     return this.issueToken(user.id, user.email, user.displayName, user.isAdmin);
   }
 
@@ -125,9 +156,19 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    if (user.deletedAt) {
+      throw new ForbiddenException('Account was deleted');
+    }
+
+    if (user.isFrozen) {
+      throw new ForbiddenException('Account is frozen');
+    }
+
     let isAdmin = Boolean(user.isAdmin);
     if (!isAdmin) {
-      const adminsCount = await this.prisma.user.count({ where: { isAdmin: true } });
+      const adminsCount = await this.prisma.user.count({
+        where: { isAdmin: true, deletedAt: null },
+      });
       if (adminsCount === 0) {
         await this.prisma.user.update({
           where: { id: user.id },
@@ -152,6 +193,8 @@ export class AuthService {
         email: true,
         displayName: true,
         isAdmin: true,
+        isFrozen: true,
+        deletedAt: true,
         maxTotalSizeBytes: true,
         maxFileCount: true,
         maxAlbumCount: true,
@@ -171,6 +214,8 @@ export class AuthService {
           email: true,
           displayName: true,
           isAdmin: true,
+          isFrozen: true,
+          deletedAt: true,
           maxTotalSizeBytes: true,
           maxFileCount: true,
           maxAlbumCount: true,
@@ -179,6 +224,7 @@ export class AuthService {
       }),
       this.prisma.media.groupBy({
         by: ['ownerId'],
+        where: { isArchived: false },
         _count: { _all: true },
         _sum: { sizeBytes: true },
       }),
@@ -203,7 +249,10 @@ export class AuthService {
     );
 
     return users.map((user) => {
-      const media = mediaByOwner.get(user.id) || { fileCount: 0, totalSizeBytes: 0 };
+      const media = mediaByOwner.get(user.id) || {
+        fileCount: 0,
+        totalSizeBytes: 0,
+      };
       const albumCount = albumByOwner.get(user.id) ?? 0;
       return {
         ...user,
@@ -232,13 +281,19 @@ export class AuthService {
     } = {};
 
     if ('maxTotalSizeBytes' in limits) {
-      data.maxTotalSizeBytes = this.normalizeLimit(limits.maxTotalSizeBytes, 'maxTotalSizeBytes');
+      data.maxTotalSizeBytes = this.normalizeLimit(
+        limits.maxTotalSizeBytes,
+        'maxTotalSizeBytes',
+      );
     }
     if ('maxFileCount' in limits) {
       data.maxFileCount = this.normalizeLimit(limits.maxFileCount, 'maxFileCount');
     }
     if ('maxAlbumCount' in limits) {
-      data.maxAlbumCount = this.normalizeLimit(limits.maxAlbumCount, 'maxAlbumCount');
+      data.maxAlbumCount = this.normalizeLimit(
+        limits.maxAlbumCount,
+        'maxAlbumCount',
+      );
     }
 
     await this.prisma.user.update({
@@ -254,6 +309,8 @@ export class AuthService {
           email: true,
           displayName: true,
           isAdmin: true,
+          isFrozen: true,
+          deletedAt: true,
           maxTotalSizeBytes: true,
           maxFileCount: true,
           maxAlbumCount: true,
@@ -261,7 +318,7 @@ export class AuthService {
         },
       }),
       this.prisma.media.aggregate({
-        where: { ownerId: userId },
+        where: { ownerId: userId, isArchived: false },
         _count: { id: true },
         _sum: { sizeBytes: true },
       }),
@@ -280,12 +337,170 @@ export class AuthService {
     };
   }
 
+  async setUserFrozen(requesterId: string, userId: string, frozen: boolean) {
+    await this.ensureAdmin(requesterId);
+
+    if (requesterId === userId) {
+      throw new BadRequestException('Admin cannot freeze own account');
+    }
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, deletedAt: true },
+    });
+
+    if (!target) {
+      throw new BadRequestException('User not found');
+    }
+
+    if (target.deletedAt) {
+      throw new BadRequestException('Deleted account cannot be frozen');
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { isFrozen: Boolean(frozen) },
+    });
+
+    return this.adminUsers(requesterId);
+  }
+
+  async removeUser(
+    requesterId: string,
+    userId: string,
+    mode: 'delete-files' | 'archive-files',
+  ) {
+    await this.ensureAdmin(requesterId);
+
+    if (requesterId === userId) {
+      throw new BadRequestException('Admin cannot delete own account');
+    }
+
+    const targetUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        displayName: true,
+        isAdmin: true,
+        deletedAt: true,
+      },
+    });
+
+    if (!targetUser) {
+      throw new BadRequestException('User not found');
+    }
+
+    if (targetUser.deletedAt) {
+      throw new BadRequestException('Account already deleted');
+    }
+
+    if (targetUser.isAdmin) {
+      const adminsCount = await this.prisma.user.count({
+        where: { isAdmin: true, deletedAt: null },
+      });
+      if (adminsCount <= 1) {
+        throw new BadRequestException('Cannot delete the last active admin');
+      }
+    }
+
+    const mediaItems = await this.prisma.media.findMany({
+      where: { ownerId: userId },
+      select: { id: true, filePath: true },
+    });
+    const mediaIds = mediaItems.map((item) => item.id);
+    const mediaFilePaths = mediaItems.map((item) => item.filePath);
+
+    const revisions = mediaIds.length
+      ? await this.prisma.mediaRevision.findMany({
+          where: { mediaId: { in: mediaIds } },
+          select: { filePath: true },
+        })
+      : [];
+    const revisionPaths = revisions.map((item) => item.filePath);
+
+    const replacementPasswordHash = await bcrypt.hash(randomUUID(), 10);
+
+    if (mode === 'delete-files') {
+      await this.prisma.$transaction(async (tx) => {
+        if (mediaIds.length > 0) {
+          await tx.mediaTag.deleteMany({ where: { mediaId: { in: mediaIds } } });
+          await tx.albumMedia.deleteMany({ where: { mediaId: { in: mediaIds } } });
+          await tx.mediaRevision.deleteMany({ where: { mediaId: { in: mediaIds } } });
+          await tx.media.deleteMany({ where: { id: { in: mediaIds } } });
+        }
+
+        await tx.publicShareAccess.deleteMany({ where: { ownerId: userId } });
+        await tx.album.deleteMany({ where: { ownerId: userId } });
+        await tx.tag.deleteMany({ where: { ownerId: userId } });
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            isFrozen: true,
+            deletedAt: new Date(),
+            passwordHash: replacementPasswordHash,
+          },
+        });
+      });
+
+      await this.deleteObjectsFromR2(userId, [...mediaFilePaths, ...revisionPaths]);
+    } else {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.publicShareAccess.deleteMany({ where: { ownerId: userId } });
+
+        if (mediaIds.length > 0) {
+          await tx.media.updateMany({
+            where: { id: { in: mediaIds } },
+            data: {
+              isArchived: true,
+              archivedAt: new Date(),
+              archivedFromOwnerId: userId,
+              archivedFromDisplayName: targetUser.displayName || null,
+              archivedFromEmail: targetUser.email,
+            },
+          });
+
+          await tx.albumMedia.deleteMany({ where: { mediaId: { in: mediaIds } } });
+          await tx.mediaTag.deleteMany({ where: { mediaId: { in: mediaIds } } });
+        }
+
+        await tx.album.deleteMany({ where: { ownerId: userId } });
+        await tx.tag.deleteMany({ where: { ownerId: userId } });
+
+        await tx.user.update({
+          where: { id: userId },
+          data: {
+            isFrozen: true,
+            deletedAt: new Date(),
+            passwordHash: replacementPasswordHash,
+          },
+        });
+      });
+    }
+
+    return this.adminUsers(requesterId);
+  }
+
+  async adminArchiveMedia(requesterId: string) {
+    await this.ensureAdmin(requesterId);
+
+    return this.prisma.media.findMany({
+      where: { isArchived: true },
+      orderBy: { archivedAt: 'desc' },
+      include: {
+        mediaTags: { include: { tag: true } },
+        albumMedia: true,
+      },
+      take: 300,
+    });
+  }
+
   async stats(userId: string) {
     const [fileCount, albumCount, aggregate] = await Promise.all([
-      this.prisma.media.count({ where: { ownerId: userId } }),
+      this.prisma.media.count({ where: { ownerId: userId, isArchived: false } }),
       this.prisma.album.count({ where: { ownerId: userId } }),
       this.prisma.media.aggregate({
-        where: { ownerId: userId },
+        where: { ownerId: userId, isArchived: false },
         _sum: { sizeBytes: true },
       }),
     ]);
@@ -326,11 +541,19 @@ export class AuthService {
   private async ensureAdmin(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, isAdmin: true },
+      select: { id: true, isAdmin: true, isFrozen: true, deletedAt: true },
     });
 
     if (!user) {
       throw new UnauthorizedException('User not found');
+    }
+
+    if (user.deletedAt) {
+      throw new ForbiddenException('Account was deleted');
+    }
+
+    if (user.isFrozen) {
+      throw new ForbiddenException('Account is frozen');
     }
 
     if (!user.isAdmin) {
@@ -338,7 +561,12 @@ export class AuthService {
     }
   }
 
-  private async issueToken(id: string, email: string, displayName: string | null, isAdmin: boolean) {
+  private async issueToken(
+    id: string,
+    email: string,
+    displayName: string | null,
+    isAdmin: boolean,
+  ) {
     const accessToken = await this.jwtService.signAsync({
       sub: id,
       email,

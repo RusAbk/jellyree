@@ -1,11 +1,13 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
+import { PrismaService } from '../prisma/prisma.service';
 
 export type RequestWithUser = Request & {
   user?: {
@@ -18,7 +20,10 @@ export type RequestWithUser = Request & {
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
-  constructor(private readonly jwtService: JwtService) {}
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<RequestWithUser>();
@@ -46,6 +51,24 @@ export class JwtAuthGuard implements CanActivate {
         displayName: payload.displayName,
         isAdmin: Boolean(payload.isAdmin),
       };
+
+      const user = await this.prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: { id: true, isFrozen: true, deletedAt: true },
+      });
+
+      if (!user) {
+        throw new UnauthorizedException('User not found');
+      }
+
+      if (user.deletedAt) {
+        throw new ForbiddenException('Account was deleted');
+      }
+
+      if (user.isFrozen) {
+        throw new ForbiddenException('Account is frozen');
+      }
+
       return true;
     } catch {
       throw new UnauthorizedException('Invalid token');

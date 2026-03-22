@@ -25,6 +25,8 @@ model User {
   passwordHash String
   displayName  String?
   isAdmin      Boolean  @default(false)
+  isFrozen     Boolean  @default(false)
+  deletedAt    DateTime?
   maxTotalSizeBytes Int?
   maxFileCount Int?
   maxAlbumCount Int?
@@ -71,6 +73,11 @@ model Media {
   metadataModifiedAt DateTime?
   latitude    Float?
   longitude   Float?
+  isArchived  Boolean      @default(false)
+  archivedAt  DateTime?
+  archivedFromOwnerId String?
+  archivedFromDisplayName String?
+  archivedFromEmail String?
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
@@ -80,6 +87,7 @@ model Media {
   revisions  MediaRevision[]
 
   @@index([ownerId])
+  @@index([isArchived])
   @@index([capturedAt])
   @@index([metadataCreatedAt])
 }

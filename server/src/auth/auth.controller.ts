@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -90,6 +91,35 @@ export class AuthController {
       maxFileCount: body.maxFileCount,
       maxAlbumCount: body.maxAlbumCount,
     });
+  }
+
+  @Post('admin/users/:id/freeze')
+  async setUserFrozen(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') id: string,
+    @Body() body: { frozen: boolean },
+  ) {
+    const requesterId = await this.resolveUserIdFromAuthorization(authorization);
+    return this.authService.setUserFrozen(requesterId, id, Boolean(body.frozen));
+  }
+
+  @Post('admin/users/:id/remove')
+  async removeUser(
+    @Headers('authorization') authorization: string | undefined,
+    @Param('id') id: string,
+    @Body() body: { mode: 'delete-files' | 'archive-files' },
+  ) {
+    const requesterId = await this.resolveUserIdFromAuthorization(authorization);
+    if (body.mode !== 'delete-files' && body.mode !== 'archive-files') {
+      throw new BadRequestException('Invalid removal mode');
+    }
+    return this.authService.removeUser(requesterId, id, body.mode);
+  }
+
+  @Get('admin/archive/media')
+  async adminArchiveMedia(@Headers('authorization') authorization?: string) {
+    const requesterId = await this.resolveUserIdFromAuthorization(authorization);
+    return this.authService.adminArchiveMedia(requesterId);
   }
 
   private async resolveUserIdFromAuthorization(authorization?: string) {

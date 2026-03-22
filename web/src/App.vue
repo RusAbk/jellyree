@@ -92,6 +92,8 @@ const adminPageOpen = ref(false)
 const adminLoading = ref(false)
 const adminUsers = ref<AdminUserOverview[]>([])
 const adminDraftLimits = ref<Record<string, { maxTotalSizeBytes: string; maxFileCount: string; maxAlbumCount: string }>>({})
+const adminArchiveLoading = ref(false)
+const adminArchiveMedia = ref<MediaItem[]>([])
 const routeMode = ref<'app' | 'public-media' | 'public-album'>('app')
 const routeToken = ref('')
 const routeAlbumId = ref<string | null>(null)
@@ -1274,9 +1276,13 @@ async function openAdminPage() {
   message.value = ''
 
   try {
-    const users = await api.adminUsers(token.value)
+    const [users, archived] = await Promise.all([
+      api.adminUsers(token.value),
+      api.adminArchiveMedia(token.value),
+    ])
     adminUsers.value = users
     createAdminDraftFromUsers(users)
+    adminArchiveMedia.value = archived
   } catch (error) {
     message.value = (error as Error).message
   } finally {
@@ -1286,6 +1292,18 @@ async function openAdminPage() {
 
 function closeAdminPage() {
   adminPageOpen.value = false
+}
+
+async function refreshAdminArchiveMedia() {
+  if (!token.value) return
+  adminArchiveLoading.value = true
+  try {
+    adminArchiveMedia.value = await api.adminArchiveMedia(token.value)
+  } catch (error) {
+    message.value = (error as Error).message
+  } finally {
+    adminArchiveLoading.value = false
+  }
 }
 
 function parseLimitDraft(value: string) {
@@ -1329,6 +1347,71 @@ async function saveAdminLimits(userId: string) {
     adminUsers.value = adminUsers.value.map((item) => (item.id === userId ? updated : item))
     createAdminDraftFromUsers(adminUsers.value)
     message.value = 'User limits updated'
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
+async function toggleUserFrozen(user: AdminUserOverview) {
+  if (!token.value) return
+
+  try {
+    const updatedUsers = await api.freezeUser(token.value, user.id, !user.isFrozen)
+    adminUsers.value = updatedUsers
+    createAdminDraftFromUsers(updatedUsers)
+    message.value = user.isFrozen ? 'Account unfrozen' : 'Account frozen'
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
+async function removeUserAccount(user: AdminUserOverview) {
+  if (!token.value) return
+  if (user.deletedAt) return
+
+  const choice = window.prompt(
+    'Type "delete" to remove account with all files, or "archive" to move files into admin-only archive',
+    'archive',
+  )
+
+  if (!choice) return
+  const normalized = choice.trim().toLowerCase()
+  const mode = normalized === 'delete' ? 'delete-files' : normalized === 'archive' ? 'archive-files' : null
+  if (!mode) {
+    message.value = 'Invalid action. Use delete or archive.'
+    return
+  }
+
+  const confirmed = window.confirm(
+    mode === 'delete-files'
+      ? `Delete account ${user.email} and permanently delete all files?`
+      : `Delete account ${user.email} and move files to admin archive?`,
+  )
+  if (!confirmed) return
+
+  try {
+    const updatedUsers = await api.removeUser(token.value, user.id, mode)
+    adminUsers.value = updatedUsers
+    createAdminDraftFromUsers(updatedUsers)
+    await refreshAdminArchiveMedia()
+    message.value = 'Account deleted'
+  } catch (error) {
+    message.value = (error as Error).message
+  }
+}
+
+async function downloadArchivedMedia(item: MediaItem) {
+  if (!token.value) return
+  try {
+    const blob = await api.fetchAdminArchiveFileBlob(token.value, item.id)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = item.filename || `archive-${item.id}`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
   } catch (error) {
     message.value = (error as Error).message
   }
@@ -4388,6 +4471,8 @@ function logout() {
   adminLoading.value = false
   adminUsers.value = []
   adminDraftLimits.value = {}
+  adminArchiveLoading.value = false
+  adminArchiveMedia.value = []
   token.value = ''
   userName.value = ''
   media.value = []
@@ -6008,7 +6093,10 @@ onBeforeUnmount(() => {
           <div v-else class="admin-users-list">
             <article v-for="user in adminUsers" :key="`admin-user-${user.id}`" class="account-card admin-user-card">
               <div class="account-card-label">{{ user.displayName || user.email }}</div>
-              <div class="muted">{{ user.email }} · {{ user.isAdmin ? 'admin' : 'user' }}</div>
+              <div class="muted">
+                {{ user.email }} · {{ user.isAdmin ? 'admin' : 'user' }} ·
+                {{ user.deletedAt ? 'deleted' : (user.isFrozen ? 'frozen' : 'active') }}
+              </div>
 
               <div class="admin-user-stats">
                 <div class="account-profile-row"><span>Files</span><strong>{{ user.fileCount }}</strong></div>
@@ -6038,6 +6126,45 @@ onBeforeUnmount(() => {
 
               <div class="row-actions">
                 <button class="btn" @click="saveAdminLimits(user.id)">Save limits</button>
+                <button
+                  class="btn ghost"
+                  :disabled="Boolean(user.deletedAt)"
+                  @click="toggleUserFrozen(user)"
+                >
+                  {{ user.isFrozen ? 'Unfreeze account' : 'Freeze account' }}
+                </button>
+                <button
+                  class="btn ghost danger"
+                  :disabled="Boolean(user.deletedAt)"
+                  @click="removeUserAccount(user)"
+                >
+                  Delete account
+                </button>
+              </div>
+            </article>
+
+            <article class="account-card admin-archive-card">
+              <div class="account-card-label">Admin-only archive</div>
+              <div class="muted">Files moved from deleted accounts (author info preserved)</div>
+              <div class="row-actions">
+                <button class="btn ghost" :disabled="adminArchiveLoading" @click="refreshAdminArchiveMedia">
+                  {{ adminArchiveLoading ? 'Refreshing...' : 'Refresh archive' }}
+                </button>
+              </div>
+
+              <div class="admin-archive-list">
+                <div v-for="item in adminArchiveMedia" :key="`archive-${item.id}`" class="admin-archive-row">
+                  <div>
+                    <div class="admin-archive-name" :title="item.filename">{{ item.filename }}</div>
+                    <div class="muted">
+                      {{ formatFileSize(item.sizeBytes) }} · by {{ item.archivedFromDisplayName || 'Unknown user' }}
+                      <template v-if="item.archivedFromEmail">({{ item.archivedFromEmail }})</template>
+                    </div>
+                    <div class="muted">Archived: {{ formatDateLabel(item.archivedAt || null) }}</div>
+                  </div>
+                  <button class="chip" @click="downloadArchivedMedia(item)">Download</button>
+                </div>
+                <div v-if="adminArchiveMedia.length === 0" class="muted">Archive is empty</div>
               </div>
             </article>
           </div>
