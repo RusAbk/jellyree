@@ -5479,14 +5479,25 @@ onBeforeUnmount(() => {
               <div class="account-card-value">{{ accountStats?.fileCount ?? 0 }}</div>
             </article>
             <article class="account-card">
+              <div class="account-card-label">Albums</div>
+              <div class="account-card-value">{{ accountStats?.albumCount ?? 0 }}</div>
+            </article>
+            <article class="account-card">
               <div class="account-card-label">Storage used</div>
               <div class="account-card-value">{{ formatFileSize(accountStats?.totalSizeBytes ?? 0) }}</div>
+              <div class="muted" v-if="accountStats">
+                Source: {{ accountStats.statsSource === 'r2' ? 'Storage (R2)' : 'Database fallback' }}
+              </div>
+              <div class="muted" v-if="accountStats?.storageTotalSizeBytes !== null">
+                Raw storage volume: {{ formatFileSize(accountStats?.storageTotalSizeBytes ?? 0) }}
+              </div>
             </article>
             <article class="account-card account-card-wide">
               <div class="account-card-label">Profile</div>
               <div class="account-profile-row"><span>Name</span><strong>{{ accountProfile?.displayName || userName }}</strong></div>
               <div class="account-profile-row"><span>Email</span><strong>{{ accountProfile?.email || '—' }}</strong></div>
               <div class="account-profile-row"><span>Created</span><strong>{{ formatDateLabel(accountProfile?.createdAt || null) }}</strong></div>
+              <div class="account-profile-row" v-if="accountStats"><span>Stats filled</span><strong>{{ accountStats.isBackfilled ? 'yes' : 'no' }}</strong></div>
             </article>
           </div>
         </section>

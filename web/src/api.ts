@@ -20,7 +20,12 @@ export type MeProfile = {
 
 export type AccountStats = {
   fileCount: number
+  albumCount: number
   totalSizeBytes: number
+  dbTotalSizeBytes: number
+  storageTotalSizeBytes: number | null
+  statsSource: 'db' | 'r2'
+  isBackfilled: boolean
 }
 
 export type MediaItem = {
