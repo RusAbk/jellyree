@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { api, type AccountStats, type AdminUserOverview, type Album, type MediaItem, type MeProfile, type Tag } from './api'
 import AlbumTreeSelect from './components/AlbumTreeSelect.vue'
 import PhotoEditorPanel from './components/PhotoEditorPanel.vue'
+import PhotopeaEditorPanel from './components/PhotopeaEditorPanel.vue'
 import { useEditorActions } from './composables/useEditorActions'
 import { useEditorPreview } from './composables/useEditorPreview'
 import { useEditorState } from './composables/useEditorState'
@@ -14,6 +15,7 @@ type AlbumTreeNode = {
 }
 
 type MobileMenuScreen = 'main' | 'library' | 'bulk'
+type EditorEngine = 'legacy' | 'photopea'
 
 type PersistedAppViewState = {
   activeSection: 'all' | 'favorites' | 'tags'
@@ -55,6 +57,9 @@ const APP_VIEW_STATE_KEY = 'jellyree_app_view_state'
 
 const token = ref(localStorage.getItem('jellyree_token') || '')
 const userName = ref(localStorage.getItem('jellyree_user') || '')
+const editorEngine = ref<EditorEngine>(
+  localStorage.getItem('jellyree_editor_engine') === 'photopea' ? 'photopea' : 'legacy',
+)
 const mode = ref<'login' | 'register' | 'admin-login'>('login')
 const authForm = reactive({
   email: '',
@@ -4508,6 +4513,12 @@ function toggleClippingOverlay() {
   clippingOverlayEnabled.value = !clippingOverlayEnabled.value
 }
 
+function setEditorEngine(engine: EditorEngine) {
+  editorEngine.value = engine
+  localStorage.setItem('jellyree_editor_engine', engine)
+  showToast(engine === 'photopea' ? 'Photopea editor mode enabled' : 'Legacy editor mode enabled')
+}
+
 async function updateEditorHistogram() {
   if (!editModeOpen.value || !activeEditorThumbSrc.value) {
     editorHistogram.value = Array.from({ length: 32 }, () => 0)
@@ -6199,7 +6210,13 @@ onBeforeUnmount(() => {
         <button v-if="lightboxItems.length > 1" class="overlay-arrow right" @click.stop="nextLightbox">›</button>
       </div>
 
+      <div v-if="editModeOpen" class="editor-engine-toggle">
+        <button class="chip" :class="{ active: editorEngine === 'legacy' }" type="button" @click="setEditorEngine('legacy')">Legacy</button>
+        <button class="chip" :class="{ active: editorEngine === 'photopea' }" type="button" @click="setEditorEngine('photopea')">Photopea</button>
+      </div>
+
       <PhotoEditorPanel
+        v-if="editorEngine === 'legacy'"
         :open="editModeOpen"
         :active-media="activeMedia"
         :thumb-src="activeMedia ? (thumbs[activeMedia.id] || '') : ''"
@@ -6242,6 +6259,34 @@ onBeforeUnmount(() => {
         @redo-step="redoEditorStep"
         @set-before-after-active="setBeforeAfterActive"
         @toggle-clipping-overlay="toggleClippingOverlay"
+      />
+
+      <PhotopeaEditorPanel
+        v-else
+        :open="editModeOpen"
+        :active-media="activeMedia"
+        :thumb-src="activeMedia ? (thumbs[activeMedia.id] || '') : ''"
+        :can-preview="Boolean(activeMedia && canPreviewInBrowser(activeMedia))"
+        :editor="editor"
+        :editor-preview-scale="editorPreviewScale"
+        :active-editor-mobile-tab="activeEditorMobileTab"
+        :editor-mobile-tabs="editorMobileTabs"
+        :editor-preview-frame-style="editorPreviewFrameStyle"
+        :editor-crop-rect-style="editorCropRectStyle"
+        :editor-filter-style="mediaFilterStyleFromEditor()"
+        :saving="saving"
+        :undo-count="undoCount"
+        :can-paste-edits="Boolean(copiedEditorAdjustments)"
+        :can-undo-step="canUndoEditorStep"
+        :can-redo-step="canRedoEditorStep"
+        :history-position="editorHistoryPosition"
+        :history-total="editorHistoryTotal"
+        :before-after-active="beforeAfterActive"
+        :clipping-overlay-enabled="clippingOverlayEnabled"
+        :histogram="editorHistogram"
+        :clipping-stats="editorClipStats"
+        @close="closeEditMode"
+        @switch-engine="setEditorEngine"
       />
 
       <div v-if="accountPageOpen" class="account-page" @click.self="closeAccountPage">

@@ -157,9 +157,13 @@ const liquifyStrokes = ref<LiquifyStroke[]>([])
 const liquifyChangeTick = ref(0)
 const liquifyCursor = reactive({
   visible: false,
-  x: 50,
-  y: 50,
+  x: 0,
+  y: 0,
+  radius: 18,
 })
+
+const previewStageRef = ref<HTMLElement | null>(null)
+const previewImageRef = ref<HTMLImageElement | null>(null)
 
 const stretchAxis = ref<StretchAxis>('vertical')
 const stretchBandStart = ref(34)
@@ -230,12 +234,12 @@ const stretchEndHandleStyle = computed(() => {
 })
 
 const liquifyCursorStyle = computed(() => {
-  const size = `${liquifyBrushSize.value}%`
+  const size = `${Math.max(8, Math.round(liquifyCursor.radius * 2))}px`
   return {
     width: size,
     height: size,
-    left: `${liquifyCursor.x}%`,
-    top: `${liquifyCursor.y}%`,
+    left: `${liquifyCursor.x}px`,
+    top: `${liquifyCursor.y}px`,
   }
 })
 
@@ -257,6 +261,32 @@ function normalizePointInElement(event: PointerEvent, target: HTMLElement) {
     y: clampPercent(normalizedY),
     width: rect.width,
     height: rect.height,
+  }
+}
+
+function pointerOnPreviewImage(event: PointerEvent) {
+  const stage = previewStageRef.value
+  const image = previewImageRef.value
+  if (!stage || !image) return null
+
+  const imageRect = image.getBoundingClientRect()
+  if (!imageRect.width || !imageRect.height) return null
+
+  const stageRect = stage.getBoundingClientRect()
+
+  const normalizedX = clampPercent(((event.clientX - imageRect.left) / imageRect.width) * 100)
+  const normalizedY = clampPercent(((event.clientY - imageRect.top) / imageRect.height) * 100)
+
+  const localStageX = event.clientX - stageRect.left
+  const localStageY = event.clientY - stageRect.top
+  const brushRadiusPx = Math.max(6, (Math.min(imageRect.width, imageRect.height) * liquifyBrushSize.value) / 100 / 2)
+
+  return {
+    x: normalizedX,
+    y: normalizedY,
+    stageX: localStageX,
+    stageY: localStageY,
+    brushRadiusPx,
   }
 }
 
@@ -318,13 +348,17 @@ function onStagePointerDown(event: PointerEvent) {
   const point = normalizePointInElement(event, target)
 
   if (geometryTool.value === 'liquify') {
+    const imagePoint = pointerOnPreviewImage(event)
+    if (!imagePoint) return
+
     stageDrag.active = true
     stageDrag.mode = 'liquify'
-    stageDrag.lastNormX = point.x
-    stageDrag.lastNormY = point.y
+    stageDrag.lastNormX = imagePoint.x
+    stageDrag.lastNormY = imagePoint.y
     liquifyCursor.visible = true
-    liquifyCursor.x = point.x
-    liquifyCursor.y = point.y
+    liquifyCursor.x = imagePoint.stageX
+    liquifyCursor.y = imagePoint.stageY
+    liquifyCursor.radius = imagePoint.brushRadiusPx
   } else {
     const axisValue = stretchAxis.value === 'vertical' ? point.x : point.y
     const threshold = 2.8
@@ -392,16 +426,20 @@ function onStagePointerMove(event: PointerEvent) {
   }
 
   const point = normalizePointInElement(event, target)
+  const imagePoint = pointerOnPreviewImage(event)
 
   if (geometryTool.value === 'liquify') {
+    if (!imagePoint) return
+
     liquifyCursor.visible = true
-    liquifyCursor.x = point.x
-    liquifyCursor.y = point.y
+    liquifyCursor.x = imagePoint.stageX
+    liquifyCursor.y = imagePoint.stageY
+    liquifyCursor.radius = imagePoint.brushRadiusPx
 
     if (stageDrag.active && stageDrag.mode === 'liquify') {
-      appendLiquifyStroke(stageDrag.lastNormX, stageDrag.lastNormY, point.x, point.y)
-      stageDrag.lastNormX = point.x
-      stageDrag.lastNormY = point.y
+      appendLiquifyStroke(stageDrag.lastNormX, stageDrag.lastNormY, imagePoint.x, imagePoint.y)
+      stageDrag.lastNormX = imagePoint.x
+      stageDrag.lastNormY = imagePoint.y
     }
     return
   }
@@ -521,24 +559,24 @@ function applyLiquifyWarp(data: ImageData) {
   const width = data.width
   const height = data.height
   const minSide = Math.max(1, Math.min(width, height))
+  const source = new Uint8ClampedArray(data.data)
   const target = data.data
+  const displacementX = new Float32Array(width * height)
+  const displacementY = new Float32Array(width * height)
 
   for (const stroke of liquifyStrokes.value) {
     const radiusPx = Math.max(1, stroke.radius * minSide)
     const fromX = stroke.fromX * width
     const fromY = stroke.fromY * height
-    const dx = (stroke.toX - stroke.fromX) * width * stroke.strength
-    const dy = (stroke.toY - stroke.fromY) * height * stroke.strength
+    const dx = (stroke.toX - stroke.fromX) * width * stroke.strength * 0.92
+    const dy = (stroke.toY - stroke.fromY) * height * stroke.strength * 0.92
 
     if (Math.abs(dx) < 0.05 && Math.abs(dy) < 0.05) continue
 
-    const padding = radiusPx + Math.max(Math.abs(dx), Math.abs(dy))
-    const x0 = Math.max(0, Math.floor(fromX - padding))
-    const y0 = Math.max(0, Math.floor(fromY - padding))
-    const x1 = Math.min(width - 1, Math.ceil(fromX + padding))
-    const y1 = Math.min(height - 1, Math.ceil(fromY + padding))
-
-    const sourceSnapshot = new Uint8ClampedArray(target)
+    const x0 = Math.max(0, Math.floor(fromX - radiusPx))
+    const y0 = Math.max(0, Math.floor(fromY - radiusPx))
+    const x1 = Math.min(width - 1, Math.ceil(fromX + radiusPx))
+    const y1 = Math.min(height - 1, Math.ceil(fromY + radiusPx))
 
     for (let y = y0; y <= y1; y += 1) {
       for (let x = x0; x <= x1; x += 1) {
@@ -548,17 +586,29 @@ function applyLiquifyWarp(data: ImageData) {
         if (dist > radiusPx) continue
 
         const t = 1 - dist / radiusPx
-        const falloff = t * t
-
-        const srcX = clampPixel(x - dx * falloff, width - 1)
-        const srcY = clampPixel(y - dy * falloff, height - 1)
-        const sample = sampleBilinear(sourceSnapshot, width, height, srcX, srcY)
-        const index = (y * width + x) * 4
-        target[index] = clampChannel(Math.round(sample[0] || 0))
-        target[index + 1] = clampChannel(Math.round(sample[1] || 0))
-        target[index + 2] = clampChannel(Math.round(sample[2] || 0))
-        target[index + 3] = clampChannel(Math.round(sample[3] || 255))
+        const falloff = t * t * (2 - t)
+        const index = y * width + x
+        const currentDx = displacementX[index] ?? 0
+        const currentDy = displacementY[index] ?? 0
+        displacementX[index] = currentDx + dx * falloff
+        displacementY[index] = currentDy + dy * falloff
       }
+    }
+  }
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x
+      const dx = displacementX[index] ?? 0
+      const dy = displacementY[index] ?? 0
+      const srcX = clampPixel(x - dx, width - 1)
+      const srcY = clampPixel(y - dy, height - 1)
+      const sample = sampleBilinear(source, width, height, srcX, srcY)
+      const pixel = index * 4
+      target[pixel] = clampChannel(Math.round(sample[0] || 0))
+      target[pixel + 1] = clampChannel(Math.round(sample[1] || 0))
+      target[pixel + 2] = clampChannel(Math.round(sample[2] || 0))
+      target[pixel + 3] = clampChannel(Math.round(sample[3] || 255))
     }
   }
 }
@@ -1004,6 +1054,7 @@ onBeforeUnmount(() => {
         <div class="editor-preview">
           <div
             v-if="thumbSrc && canPreview"
+            ref="previewStageRef"
             class="editor-crop-stage"
             @pointerdown="onStagePointerDown"
             @pointermove="onStagePointerMove"
@@ -1013,6 +1064,7 @@ onBeforeUnmount(() => {
           >
             <div class="editor-image-frame" :style="editorPreviewFrameStyle">
               <img
+                ref="previewImageRef"
                 class="overlay-image editor-image"
                 :src="beforeAfterActive ? thumbSrc : (processedPreviewSrc || thumbSrc)"
                 :alt="activeMedia.filename"
@@ -1029,11 +1081,6 @@ onBeforeUnmount(() => {
                 <button class="editor-stretch-handle start" type="button" :style="stretchStartHandleStyle">‹›</button>
                 <button class="editor-stretch-handle end" type="button" :style="stretchEndHandleStyle">‹›</button>
               </div>
-              <div
-                v-if="geometryTool === 'liquify' && liquifyCursor.visible"
-                class="editor-liquify-cursor"
-                :style="liquifyCursorStyle"
-              ></div>
               <div
                 v-if="clippingOverlayEnabled"
                 class="editor-clipping-overlay"
@@ -1057,6 +1104,11 @@ onBeforeUnmount(() => {
                 <span class="crop-handle e" @pointerdown.stop="onStartCrop($event, 'e')"></span>
               </div>
             </div>
+            <div
+              v-if="geometryTool === 'liquify' && liquifyCursor.visible"
+              class="editor-liquify-cursor"
+              :style="liquifyCursorStyle"
+            ></div>
           </div>
           <div v-else class="overlay-fallback">Preview unavailable for this format</div>
         </div>
