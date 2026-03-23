@@ -258,6 +258,7 @@ let loadAllRunId = 0
 let virtualWindowUpdateTimer: ReturnType<typeof requestAnimationFrame> | null = null
 let nearViewportThumbLoadTimer: ReturnType<typeof setTimeout> | null = null
 let nearViewportThumbLoadInFlight = false
+let editorHistoryPushTimer: ReturnType<typeof setTimeout> | null = null
 const mediaPageSize = 120
 const thumbQueue = {
   active: 0,
@@ -284,6 +285,9 @@ const copiedEditorAdjustments = ref<Record<string, number | boolean> | null>(nul
 const beforeAfterActive = ref(false)
 const clippingOverlayEnabled = ref(false)
 const editorHistogram = ref<number[]>(Array.from({ length: 32 }, () => 0))
+const editorHistoryStack = ref<Array<Record<string, number | boolean>>>([])
+const editorHistoryIndex = ref(-1)
+const editorHistoryHydrating = ref(false)
 const editorClipStats = reactive({
   shadows: 0,
   highlights: 0,
@@ -529,6 +533,15 @@ const activeMediaAlbums = computed(() => {
 
 const activeMediaAlbum = computed(() => activeMediaAlbums.value[0] || null)
 const undoCount = computed(() => activeMedia.value?.revisionCount ?? 0)
+const canUndoEditorStep = computed(() => editModeOpen.value && editorHistoryIndex.value > 0)
+const canRedoEditorStep = computed(() => {
+  return editModeOpen.value && editorHistoryIndex.value >= 0 && editorHistoryIndex.value < editorHistoryStack.value.length - 1
+})
+const editorHistoryTotal = computed(() => editorHistoryStack.value.length)
+const editorHistoryPosition = computed(() => {
+  if (editorHistoryStack.value.length === 0) return 0
+  return Math.max(1, editorHistoryIndex.value + 1)
+})
 const selectedCount = computed(() => selectedMediaIds.value.length)
 const selectedMediaSet = computed(() => new Set(selectedMediaIds.value))
 const visibleSubalbums = computed(() => {
@@ -4272,6 +4285,90 @@ function applyEditorAdjustmentSnapshot(snapshot: Record<string, number | boolean
   }
 }
 
+function areEditorSnapshotsEqual(
+  a: Record<string, number | boolean>,
+  b: Record<string, number | boolean>,
+) {
+  const keysA = Object.keys(a)
+  const keysB = Object.keys(b)
+  if (keysA.length !== keysB.length) return false
+  return keysA.every((key) => a[key] === b[key])
+}
+
+function initializeEditorHistory() {
+  const snapshot = snapshotEditorAdjustments()
+  editorHistoryStack.value = [snapshot]
+  editorHistoryIndex.value = 0
+}
+
+function clearEditorHistory() {
+  editorHistoryStack.value = []
+  editorHistoryIndex.value = -1
+  if (editorHistoryPushTimer) {
+    clearTimeout(editorHistoryPushTimer)
+    editorHistoryPushTimer = null
+  }
+}
+
+function pushEditorHistorySnapshot() {
+  if (!editModeOpen.value || editorHistoryHydrating.value) return
+  const nextSnapshot = snapshotEditorAdjustments()
+
+  if (editorHistoryIndex.value >= 0) {
+    const currentSnapshot = editorHistoryStack.value[editorHistoryIndex.value]
+    if (currentSnapshot && areEditorSnapshotsEqual(currentSnapshot, nextSnapshot)) {
+      return
+    }
+  }
+
+  const head = editorHistoryStack.value.slice(0, editorHistoryIndex.value + 1)
+  head.push(nextSnapshot)
+  if (head.length > 120) {
+    head.shift()
+  }
+
+  editorHistoryStack.value = head
+  editorHistoryIndex.value = head.length - 1
+}
+
+function scheduleEditorHistoryPush() {
+  if (!editModeOpen.value || editorHistoryHydrating.value) return
+  if (editorHistoryPushTimer) {
+    clearTimeout(editorHistoryPushTimer)
+  }
+  editorHistoryPushTimer = setTimeout(() => {
+    editorHistoryPushTimer = null
+    pushEditorHistorySnapshot()
+  }, 90)
+}
+
+function applyEditorHistorySnapshot(snapshot: Record<string, number | boolean>) {
+  editorHistoryHydrating.value = true
+  try {
+    applyEditorAdjustmentSnapshot(snapshot)
+  } finally {
+    editorHistoryHydrating.value = false
+  }
+}
+
+function undoEditorStep() {
+  if (!canUndoEditorStep.value) return
+  const nextIndex = editorHistoryIndex.value - 1
+  const snapshot = editorHistoryStack.value[nextIndex]
+  if (!snapshot) return
+  editorHistoryIndex.value = nextIndex
+  applyEditorHistorySnapshot(snapshot)
+}
+
+function redoEditorStep() {
+  if (!canRedoEditorStep.value) return
+  const nextIndex = editorHistoryIndex.value + 1
+  const snapshot = editorHistoryStack.value[nextIndex]
+  if (!snapshot) return
+  editorHistoryIndex.value = nextIndex
+  applyEditorHistorySnapshot(snapshot)
+}
+
 function onEditorFieldUpdate(payload: { key: string; value: number | boolean }) {
   ;(editor as unknown as Record<string, number | boolean>)[payload.key] = payload.value
 }
@@ -4284,31 +4381,43 @@ function copyEditorEdits() {
 function pasteEditorEdits() {
   if (!copiedEditorAdjustments.value) return
   applyEditorAdjustmentSnapshot(copiedEditorAdjustments.value)
+  scheduleEditorHistoryPush()
   showToast('Edits pasted')
+}
+
+function resetEditorAll() {
+  resetEditorAdjustments()
+  scheduleEditorHistoryPush()
+  showToast('All adjustments reset')
 }
 
 function resetEditorGroup(group: 'tone' | 'detail' | 'color' | 'geometry') {
   if (group === 'tone') {
     resetToneAdjustments()
+    scheduleEditorHistoryPush()
     showToast('Tone reset')
     return
   }
   if (group === 'detail') {
     resetDetailAdjustments()
+    scheduleEditorHistoryPush()
     showToast('Detail reset')
     return
   }
   if (group === 'color') {
     resetColorAdjustments()
+    scheduleEditorHistoryPush()
     showToast('Color reset')
     return
   }
   resetGeometryAdjustments()
+  scheduleEditorHistoryPush()
   showToast('Geometry reset')
 }
 
 function applyEditorPreset(preset: 'auto' | 'portrait' | 'landscape' | 'night' | 'bw') {
   applyPreset(preset)
+  scheduleEditorHistoryPush()
   showToast(`Preset ${preset.toUpperCase()} applied`)
 }
 
@@ -4402,6 +4511,27 @@ function onKeyDown(event: KeyboardEvent) {
   }
 
   if (editModeOpen.value) {
+    const isInputTarget =
+      event.target instanceof HTMLInputElement ||
+      event.target instanceof HTMLTextAreaElement ||
+      event.target instanceof HTMLSelectElement
+
+    if (!isInputTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      event.preventDefault()
+      if (event.shiftKey) {
+        redoEditorStep()
+      } else {
+        undoEditorStep()
+      }
+      return
+    }
+
+    if (!isInputTarget && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+      event.preventDefault()
+      redoEditorStep()
+      return
+    }
+
     if (event.code === 'Space') {
       beforeAfterActive.value = true
       event.preventDefault()
@@ -4570,6 +4700,9 @@ watch(editModeOpen, (isOpen) => {
   if (!isOpen) {
     beforeAfterActive.value = false
     clippingOverlayEnabled.value = false
+    clearEditorHistory()
+  } else {
+    initializeEditorHistory()
   }
   void updateEditorHistogram()
 })
@@ -4598,9 +4731,24 @@ watch(
     editor.sepia,
     editor.cropZoom,
     editor.rotate,
+    editor.flipX,
+    editor.flipY,
+    editor.cropX,
+    editor.cropY,
+    editor.cropWidth,
+    editor.cropHeight,
   ],
   () => {
+    scheduleEditorHistoryPush()
     void updateEditorHistogram()
+  },
+)
+
+watch(
+  () => activeMediaId.value,
+  () => {
+    if (!editModeOpen.value) return
+    initializeEditorHistory()
   },
 )
 
@@ -4725,6 +4873,10 @@ onBeforeUnmount(() => {
   if (nearViewportThumbLoadTimer) {
     clearTimeout(nearViewportThumbLoadTimer)
     nearViewportThumbLoadTimer = null
+  }
+  if (editorHistoryPushTimer) {
+    clearTimeout(editorHistoryPushTimer)
+    editorHistoryPushTimer = null
   }
   pendingThumbUpdates.clear()
   clearLightboxFullImage()
@@ -5983,6 +6135,10 @@ onBeforeUnmount(() => {
         :saving="saving"
         :undo-count="undoCount"
         :can-paste-edits="Boolean(copiedEditorAdjustments)"
+        :can-undo-step="canUndoEditorStep"
+        :can-redo-step="canRedoEditorStep"
+        :history-position="editorHistoryPosition"
+        :history-total="editorHistoryTotal"
         :before-after-active="beforeAfterActive"
         :clipping-overlay-enabled="clippingOverlayEnabled"
         :histogram="editorHistogram"
@@ -5994,13 +6150,15 @@ onBeforeUnmount(() => {
         @crop-move="onCropPointerMove"
         @stop-crop="stopCropDrag"
         @start-crop="startCropDrag"
-        @reset="resetEditorAdjustments"
+        @reset="resetEditorAll"
         @reset-group="resetEditorGroup"
         @undo="undoLastPermanentEdit"
         @apply="applyImageEditsPermanently"
         @apply-preset="applyEditorPreset"
         @copy-edits="copyEditorEdits"
         @paste-edits="pasteEditorEdits"
+        @undo-step="undoEditorStep"
+        @redo-step="redoEditorStep"
         @set-before-after-active="setBeforeAfterActive"
         @toggle-clipping-overlay="toggleClippingOverlay"
       />

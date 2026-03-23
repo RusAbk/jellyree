@@ -18,6 +18,10 @@ const props = defineProps<{
   saving: boolean
   undoCount: number
   canPasteEdits: boolean
+  canUndoStep: boolean
+  canRedoStep: boolean
+  historyPosition: number
+  historyTotal: number
   beforeAfterActive: boolean
   clippingOverlayEnabled: boolean
   histogram: number[]
@@ -41,6 +45,8 @@ const emit = defineEmits<{
   (e: 'applyPreset', preset: 'auto' | 'portrait' | 'landscape' | 'night' | 'bw'): void
   (e: 'copyEdits'): void
   (e: 'pasteEdits'): void
+  (e: 'undoStep'): void
+  (e: 'redoStep'): void
   (e: 'setBeforeAfterActive', value: boolean): void
   (e: 'toggleClippingOverlay'): void
   (e: 'update:editorField', payload: { key: keyof EditorState; value: number | boolean }): void
@@ -454,10 +460,13 @@ onBeforeUnmount(() => {
               </button>
               <button class="chip" type="button" @click="emit('copyEdits')">Copy edits</button>
               <button class="chip" type="button" :disabled="!canPasteEdits" @click="emit('pasteEdits')">Paste edits</button>
+              <button class="chip" type="button" :disabled="!canUndoStep" @click="emit('undoStep')">Undo step</button>
+              <button class="chip" type="button" :disabled="!canRedoStep" @click="emit('redoStep')">Redo step</button>
               <button class="chip" type="button" :class="{ active: clippingOverlayEnabled }" @click="emit('toggleClippingOverlay')">
                 Clipping overlay
               </button>
             </div>
+            <div class="muted">History {{ historyPosition }} / {{ historyTotal }}</div>
           </div>
 
           <div class="editor-histogram">
@@ -571,6 +580,12 @@ onBeforeUnmount(() => {
         </button>
         <button class="btn ghost" aria-label="Paste edits" title="Paste" :disabled="!canPasteEdits" @click="emit('pasteEdits')">
           <i class="ri-clipboard-line" aria-hidden="true"></i>
+        </button>
+        <button class="btn ghost" aria-label="Undo step" title="Undo step" :disabled="!canUndoStep" @click="emit('undoStep')">
+          <i class="ri-reply-line" aria-hidden="true"></i>
+        </button>
+        <button class="btn ghost" aria-label="Redo step" title="Redo step" :disabled="!canRedoStep" @click="emit('redoStep')">
+          <i class="ri-share-forward-line" aria-hidden="true"></i>
         </button>
         <button class="btn ghost" aria-label="Before after" title="Before/After" @touchstart.prevent="emit('setBeforeAfterActive', true)" @touchend.prevent="emit('setBeforeAfterActive', false)">
           <i class="ri-contrast-line" aria-hidden="true"></i>
