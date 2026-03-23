@@ -37,6 +37,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { createOpaqueShareToken } from './share-token';
+import { normalizeEditorAdjustments, type NormalizedEditorAdjustments } from '../../../shared/editor-adjustments';
 
 function toNumber(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -479,6 +480,192 @@ export class MediaController {
         }),
       ),
     );
+  }
+
+  private async renderEditedImageBuffer(
+    sourceBuffer: Buffer,
+    adjustments: NormalizedEditorAdjustments,
+    options?: { preview?: boolean },
+  ) {
+    const {
+      temperature,
+      brightness,
+      contrast,
+      saturation,
+      toneDepth,
+      shadowsLevel,
+      highlightsLevel,
+      sharpness,
+      definition,
+      vignette,
+      glamour,
+      grayscale,
+      sepia,
+      cropZoom,
+      rotate,
+      flipX,
+      flipY,
+      cropX,
+      cropY,
+      cropWidth,
+      cropHeight,
+    } = adjustments;
+
+    const source = sharp(sourceBuffer, { failOn: 'none' });
+    const metadata = await source.metadata();
+
+    if (!metadata.width || !metadata.height) {
+      throw new BadRequestException('Cannot read image dimensions');
+    }
+
+    let pipeline = source;
+
+    const initialLeft = Math.round((cropX / 100) * metadata.width);
+    const initialTop = Math.round((cropY / 100) * metadata.height);
+    const initialWidth = Math.max(1, Math.round((cropWidth / 100) * metadata.width));
+    const initialHeight = Math.max(1, Math.round((cropHeight / 100) * metadata.height));
+    const boundedWidth = Math.min(initialWidth, metadata.width - initialLeft);
+    const boundedHeight = Math.min(initialHeight, metadata.height - initialTop);
+
+    if (
+      boundedWidth < metadata.width ||
+      boundedHeight < metadata.height ||
+      initialLeft > 0 ||
+      initialTop > 0
+    ) {
+      pipeline = pipeline.extract({
+        left: initialLeft,
+        top: initialTop,
+        width: boundedWidth,
+        height: boundedHeight,
+      });
+    }
+
+    if (cropZoom > 0) {
+      const currentWidth = boundedWidth;
+      const currentHeight = boundedHeight;
+      const zoomFactor = 1 + cropZoom / 100;
+      const zoomedWidth = Math.max(1, Math.round(currentWidth / zoomFactor));
+      const zoomedHeight = Math.max(1, Math.round(currentHeight / zoomFactor));
+      const left = Math.max(0, Math.round((currentWidth - zoomedWidth) / 2));
+      const top = Math.max(0, Math.round((currentHeight - zoomedHeight) / 2));
+      pipeline = pipeline.extract({ left, top, width: zoomedWidth, height: zoomedHeight });
+    }
+
+    if (rotate) {
+      pipeline = pipeline.rotate(rotate, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+    }
+
+    if (flipX) {
+      pipeline = pipeline.flop();
+    }
+
+    if (flipY) {
+      pipeline = pipeline.flip();
+    }
+
+    const brightnessFactor = Math.max(0, 1 + brightness / 100);
+    const saturationFactor = Math.max(0, (1 + saturation / 100) * (1 - grayscale / 100));
+
+    pipeline = pipeline.modulate({
+      brightness: brightnessFactor,
+      saturation: saturationFactor,
+    });
+
+    if (temperature !== 0) {
+      const warmFactor = temperature / 100;
+      const redGain = clamp(1 + warmFactor * 0.38, 0.6, 1.5);
+      const greenGain = clamp(1 + warmFactor * 0.08, 0.75, 1.3);
+      const blueGain = clamp(1 - warmFactor * 0.34, 0.55, 1.5);
+      pipeline = pipeline.linear([redGain, greenGain, blueGain]);
+    }
+
+    if (contrast !== 0) {
+      const contrastFactor = Math.max(0.05, 1 + contrast / 100);
+      const offset = 128 - 128 * contrastFactor;
+      pipeline = pipeline.linear(contrastFactor, offset);
+    }
+
+    if (toneDepth !== 0) {
+      const toneContrast = Math.max(0.1, 1 + toneDepth / 230);
+      const toneOffset = 128 - 128 * toneContrast;
+      pipeline = pipeline.linear(toneContrast, toneOffset);
+    }
+
+    if (shadowsLevel !== 0 || highlightsLevel !== 0) {
+      const tonalSlope = clamp(1 - highlightsLevel / 260, 0.6, 1.5);
+      const tonalOffset = shadowsLevel / 1.6;
+      pipeline = pipeline.linear(tonalSlope, tonalOffset);
+    }
+
+    if (definition !== 0) {
+      const definitionContrast = Math.max(0.1, 1 + definition / 280);
+      const definitionOffset = 128 - 128 * definitionContrast;
+      pipeline = pipeline.linear(definitionContrast, definitionOffset);
+    }
+
+    if (sharpness > 0 || definition > 0) {
+      const sharpenSigma = clamp(0.4 + sharpness / 55 + Math.max(0, definition) / 120, 0.4, 4.5);
+      pipeline = pipeline.sharpen(sharpenSigma);
+    }
+
+    if (glamour > 0) {
+      const glamourBlur = clamp(0.3 + glamour / 65, 0.3, 2.2);
+      pipeline = pipeline.blur(glamourBlur).modulate({
+        brightness: 1 + glamour / 850,
+        saturation: 1 + glamour / 1100,
+      });
+    }
+
+    if (sepia > 0) {
+      pipeline = pipeline.recomb([
+        [0.393, 0.769, 0.189],
+        [0.349, 0.686, 0.168],
+        [0.272, 0.534, 0.131],
+      ]);
+    }
+
+    if (options?.preview) {
+      pipeline = pipeline.resize({
+        width: 1600,
+        height: 1600,
+        fit: 'inside',
+        withoutEnlargement: true,
+        fastShrinkOnLoad: true,
+      });
+    }
+
+    let outputBuffer = await pipeline.toBuffer();
+
+    if (vignette > 0) {
+      const outputSize = await sharp(outputBuffer, { failOn: 'none' }).metadata();
+      if (outputSize.width && outputSize.height) {
+        const vignetteOpacity = clamp(vignette / 170, 0, 0.58);
+        const vignetteSvg = Buffer.from(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="${outputSize.width}" height="${outputSize.height}">
+            <defs>
+              <radialGradient id="v" cx="50%" cy="50%" r="70%">
+                <stop offset="58%" stop-color="white" stop-opacity="0" />
+                <stop offset="100%" stop-color="black" stop-opacity="${vignetteOpacity}" />
+              </radialGradient>
+            </defs>
+            <rect width="100%" height="100%" fill="url(#v)" />
+          </svg>`,
+        );
+
+        outputBuffer = await sharp(outputBuffer)
+          .composite([{ input: vignetteSvg, blend: 'multiply' }])
+          .toBuffer();
+      }
+    }
+
+    if (options?.preview) {
+      return sharp(outputBuffer, { failOn: 'none' })
+        .jpeg({ quality: 72, chromaSubsampling: '4:2:0', mozjpeg: true, progressive: true })
+        .toBuffer();
+    }
+
+    return outputBuffer;
   }
 
   @Get()
@@ -1562,11 +1749,43 @@ export class MediaController {
     }
   }
 
+  @Post(':id/preview-render')
+  async previewRender(
+    @Req() req: RequestWithUser,
+    @Param('id') id: string,
+    @Body() body: { adjustments?: Record<string, unknown> },
+    @Res() response: Response,
+  ) {
+    const media = await this.prisma.media.findFirst({
+      where: { id, ownerId: req.user!.id },
+      select: { id: true, ownerId: true, filePath: true, mimeType: true },
+    });
+
+    if (!media) {
+      return response.status(404).json({ error: 'Not found' });
+    }
+
+    if (!media.mimeType.toLowerCase().startsWith('image/')) {
+      throw new BadRequestException('Only image files can be edited');
+    }
+
+    const normalized = normalizeEditorAdjustments(body.adjustments);
+    const sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+    const previewBuffer = await this.renderEditedImageBuffer(sourceBuffer, normalized, { preview: true });
+
+    response.setHeader('Content-Type', 'image/jpeg');
+    response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    response.setHeader('Pragma', 'no-cache');
+    response.setHeader('Expires', '0');
+    response.setHeader('Content-Length', String(previewBuffer.byteLength));
+    return response.send(previewBuffer);
+  }
+
   @Post(':id/apply-edits')
   async applyEdits(
     @Req() req: RequestWithUser,
     @Param('id') id: string,
-    @Body() body: { adjustments?: Record<string, number> },
+    @Body() body: { adjustments?: Record<string, unknown> },
   ) {
     const media = await this.prisma.media.findFirst({
       where: { id, ownerId: req.user!.id },
@@ -1579,188 +1798,26 @@ export class MediaController {
     if (!media.mimeType.toLowerCase().startsWith('image/')) {
       throw new BadRequestException('Only image files can be edited');
     }
-
-    const adjustments = body.adjustments || {};
-    const temperature = clamp(toNumber(adjustments.temperature, 0), -100, 100);
-    const brightness = clamp(toNumber(adjustments.brightness, 0), -80, 80);
-    const contrast = clamp(toNumber(adjustments.contrast, 0), -80, 80);
-    const saturation = clamp(toNumber(adjustments.saturation, 0), -80, 80);
-    const toneDepth = clamp(toNumber(adjustments.toneDepth, 0), -100, 100);
-    const shadowsLevel = clamp(toNumber(adjustments.shadowsLevel, 0), -100, 100);
-    const highlightsLevel = clamp(toNumber(adjustments.highlightsLevel, 0), -100, 100);
-    const sharpness = clamp(toNumber(adjustments.sharpness, 0), 0, 100);
-    const definition = clamp(toNumber(adjustments.definition, 0), -100, 100);
-    const vignette = clamp(toNumber(adjustments.vignette, 0), 0, 100);
-    const glamour = clamp(toNumber(adjustments.glamour, 0), 0, 100);
-    const grayscale = clamp(toNumber(adjustments.grayscale, 0), 0, 100);
-    const sepia = clamp(toNumber(adjustments.sepia, 0), 0, 100);
-    const cropZoom = clamp(toNumber(adjustments.cropZoom, 0), 0, 90);
-    const rotate = clamp(toNumber(adjustments.rotate, 0), -180, 180);
-    const flipX = toNumber(adjustments.flipX, 0) > 0;
-    const flipY = toNumber(adjustments.flipY, 0) > 0;
-    const cropX = clamp(toNumber(adjustments.cropX, 0), 0, 95);
-    const cropY = clamp(toNumber(adjustments.cropY, 0), 0, 95);
-    const cropWidth = clamp(toNumber(adjustments.cropWidth, 100), 5, 100 - cropX);
-    const cropHeight = clamp(toNumber(adjustments.cropHeight, 100), 5, 100 - cropY);
+    const normalized = normalizeEditorAdjustments(body.adjustments);
 
     await this.clearMediaRevisions(media.id, media.ownerId);
 
     const sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
-    try {
-      const source = sharp(sourceBuffer, { failOn: 'none' });
-      const metadata = await source.metadata();
+    const outputBuffer = await this.renderEditedImageBuffer(sourceBuffer, normalized);
 
-      if (!metadata.width || !metadata.height) {
-        throw new BadRequestException('Cannot read image dimensions');
-      }
+    await this.uploadBufferToR2(media.ownerId, media.filePath, media.mimeType, outputBuffer);
 
-      let pipeline = source;
+    const outputMeta = await sharp(outputBuffer, { failOn: 'none' }).metadata();
 
-      const initialLeft = Math.round((cropX / 100) * metadata.width);
-      const initialTop = Math.round((cropY / 100) * metadata.height);
-      const initialWidth = Math.max(1, Math.round((cropWidth / 100) * metadata.width));
-      const initialHeight = Math.max(1, Math.round((cropHeight / 100) * metadata.height));
-      const boundedWidth = Math.min(initialWidth, metadata.width - initialLeft);
-      const boundedHeight = Math.min(initialHeight, metadata.height - initialTop);
-
-      if (
-        boundedWidth < metadata.width ||
-        boundedHeight < metadata.height ||
-        initialLeft > 0 ||
-        initialTop > 0
-      ) {
-        pipeline = pipeline.extract({
-          left: initialLeft,
-          top: initialTop,
-          width: boundedWidth,
-          height: boundedHeight,
-        });
-      }
-
-      if (cropZoom > 0) {
-        const currentWidth = boundedWidth;
-        const currentHeight = boundedHeight;
-        const zoomFactor = 1 + cropZoom / 100;
-        const zoomedWidth = Math.max(1, Math.round(currentWidth / zoomFactor));
-        const zoomedHeight = Math.max(1, Math.round(currentHeight / zoomFactor));
-        const left = Math.max(0, Math.round((currentWidth - zoomedWidth) / 2));
-        const top = Math.max(0, Math.round((currentHeight - zoomedHeight) / 2));
-        pipeline = pipeline.extract({ left, top, width: zoomedWidth, height: zoomedHeight });
-      }
-
-      if (rotate) {
-        pipeline = pipeline.rotate(rotate, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
-      }
-
-      if (flipX) {
-        pipeline = pipeline.flop();
-      }
-
-      if (flipY) {
-        pipeline = pipeline.flip();
-      }
-
-      const brightnessFactor = Math.max(0, 1 + brightness / 100);
-      const saturationFactor = Math.max(0, (1 + saturation / 100) * (1 - grayscale / 100));
-
-      pipeline = pipeline.modulate({
-        brightness: brightnessFactor,
-        saturation: saturationFactor,
-      });
-
-      if (temperature !== 0) {
-        const warmFactor = temperature / 100;
-        const redGain = clamp(1 + warmFactor * 0.38, 0.6, 1.5);
-        const greenGain = clamp(1 + warmFactor * 0.08, 0.75, 1.3);
-        const blueGain = clamp(1 - warmFactor * 0.34, 0.55, 1.5);
-        pipeline = pipeline.linear([redGain, greenGain, blueGain]);
-      }
-
-      if (contrast !== 0) {
-        const contrastFactor = Math.max(0.05, 1 + contrast / 100);
-        const offset = 128 - 128 * contrastFactor;
-        pipeline = pipeline.linear(contrastFactor, offset);
-      }
-
-      if (toneDepth !== 0) {
-        const toneContrast = Math.max(0.1, 1 + toneDepth / 230);
-        const toneOffset = 128 - 128 * toneContrast;
-        pipeline = pipeline.linear(toneContrast, toneOffset);
-      }
-
-      if (shadowsLevel !== 0 || highlightsLevel !== 0) {
-        const tonalSlope = clamp(1 - highlightsLevel / 260, 0.6, 1.5);
-        const tonalOffset = shadowsLevel / 1.6;
-        pipeline = pipeline.linear(tonalSlope, tonalOffset);
-      }
-
-      if (definition !== 0) {
-        const definitionContrast = Math.max(0.1, 1 + definition / 280);
-        const definitionOffset = 128 - 128 * definitionContrast;
-        pipeline = pipeline.linear(definitionContrast, definitionOffset);
-      }
-
-      if (sharpness > 0 || definition > 0) {
-        const sharpenSigma = clamp(0.4 + sharpness / 55 + Math.max(0, definition) / 120, 0.4, 4.5);
-        pipeline = pipeline.sharpen(sharpenSigma);
-      }
-
-      if (glamour > 0) {
-        const glamourBlur = clamp(0.3 + glamour / 65, 0.3, 2.2);
-        pipeline = pipeline.blur(glamourBlur).modulate({
-          brightness: 1 + glamour / 850,
-          saturation: 1 + glamour / 1100,
-        });
-      }
-
-      if (sepia > 0) {
-        pipeline = pipeline.recomb([
-          [0.393, 0.769, 0.189],
-          [0.349, 0.686, 0.168],
-          [0.272, 0.534, 0.131],
-        ]);
-      }
-
-      let outputBuffer = await pipeline.toBuffer();
-
-      if (vignette > 0) {
-        const outputSize = await sharp(outputBuffer, { failOn: 'none' }).metadata();
-        if (outputSize.width && outputSize.height) {
-          const vignetteOpacity = clamp(vignette / 170, 0, 0.58);
-          const vignetteSvg = Buffer.from(
-            `<svg xmlns="http://www.w3.org/2000/svg" width="${outputSize.width}" height="${outputSize.height}">
-              <defs>
-                <radialGradient id="v" cx="50%" cy="50%" r="70%">
-                  <stop offset="58%" stop-color="white" stop-opacity="0" />
-                  <stop offset="100%" stop-color="black" stop-opacity="${vignetteOpacity}" />
-                </radialGradient>
-              </defs>
-              <rect width="100%" height="100%" fill="url(#v)" />
-            </svg>`,
-          );
-
-          outputBuffer = await sharp(outputBuffer)
-            .composite([{ input: vignetteSvg, blend: 'multiply' }])
-            .toBuffer();
-        }
-      }
-
-      await this.uploadBufferToR2(media.ownerId, media.filePath, media.mimeType, outputBuffer);
-
-      const outputMeta = await sharp(outputBuffer, { failOn: 'none' }).metadata();
-
-      await this.prisma.media.update({
-        where: { id },
-        data: {
-          width: outputMeta.width || null,
-          height: outputMeta.height || null,
-          sizeBytes: Number(outputBuffer.byteLength),
-          adjustments: Prisma.JsonNull,
-        },
-      });
-    } catch (error) {
-      throw error;
-    }
+    await this.prisma.media.update({
+      where: { id },
+      data: {
+        width: outputMeta.width || null,
+        height: outputMeta.height || null,
+        sizeBytes: Number(outputBuffer.byteLength),
+        adjustments: Prisma.JsonNull,
+      },
+    });
 
     return this.prisma.media.findUnique({
       where: { id },

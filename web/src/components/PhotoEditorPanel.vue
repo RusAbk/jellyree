@@ -43,6 +43,7 @@ const emit = defineEmits<{
   (e: 'pasteEdits'): void
   (e: 'setBeforeAfterActive', value: boolean): void
   (e: 'toggleClippingOverlay'): void
+  (e: 'update:editorField', payload: { key: keyof EditorState; value: number | boolean }): void
 }>()
 
 const previewScaleModel = computed({
@@ -57,6 +58,18 @@ const activeTabModel = computed({
 
 function onStartCrop(event: PointerEvent, mode: CropDragMode) {
   emit('startCrop', event, mode)
+}
+
+function updateEditorNumberField(key: keyof EditorState, event: Event) {
+  const target = event.target as HTMLInputElement | null
+  if (!target) return
+  emit('update:editorField', { key, value: Number(target.value) })
+}
+
+function updateEditorBooleanField(key: keyof EditorState, event: Event) {
+  const target = event.target as HTMLInputElement | null
+  if (!target) return
+  emit('update:editorField', { key, value: Boolean(target.checked) })
 }
 
 let beforeAfterTouchTimer: ReturnType<typeof setTimeout> | null = null
@@ -212,26 +225,26 @@ onBeforeUnmount(() => {
 
         <div class="editor-controls">
           <div class="slider-row"><span>Preview scale</span><input v-model="previewScaleModel" type="range" min="25" max="300" /></div>
-          <div class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
-          <div class="slider-row"><span>Brightness</span><input v-model="editor.brightness" type="range" min="-60" max="60" /></div>
-          <div class="slider-row"><span>Contrast</span><input v-model="editor.contrast" type="range" min="-60" max="60" /></div>
-          <div class="slider-row"><span>Saturation</span><input v-model="editor.saturation" type="range" min="-60" max="60" /></div>
-          <div class="slider-row"><span>Tone depth</span><input v-model="editor.toneDepth" type="range" min="-100" max="100" /></div>
-          <div class="slider-row"><span>Shadows level</span><input v-model="editor.shadowsLevel" type="range" min="-100" max="100" /></div>
-          <div class="slider-row"><span>Highlights level</span><input v-model="editor.highlightsLevel" type="range" min="-100" max="100" /></div>
-          <div class="slider-row"><span>Sharpness</span><input v-model="editor.sharpness" type="range" min="0" max="100" /></div>
-          <div class="slider-row"><span>Definition</span><input v-model="editor.definition" type="range" min="-100" max="100" /></div>
-          <div class="slider-row"><span>Vignette</span><input v-model="editor.vignette" type="range" min="0" max="100" /></div>
-          <div class="slider-row"><span>Glamour</span><input v-model="editor.glamour" type="range" min="0" max="100" /></div>
-          <div class="slider-row"><span>Grayscale</span><input v-model="editor.grayscale" type="range" min="0" max="100" /></div>
-          <div class="slider-row"><span>Sepia</span><input v-model="editor.sepia" type="range" min="0" max="100" /></div>
-          <div class="slider-row"><span>Crop zoom</span><input v-model="editor.cropZoom" type="range" min="0" max="60" /></div>
-          <div class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" step="90" /></div>
+          <div class="slider-row"><span>Temperature</span><input :value="editor.temperature" type="range" min="-100" max="100" @input="updateEditorNumberField('temperature', $event)" /></div>
+          <div class="slider-row"><span>Brightness</span><input :value="editor.brightness" type="range" min="-60" max="60" @input="updateEditorNumberField('brightness', $event)" /></div>
+          <div class="slider-row"><span>Contrast</span><input :value="editor.contrast" type="range" min="-60" max="60" @input="updateEditorNumberField('contrast', $event)" /></div>
+          <div class="slider-row"><span>Saturation</span><input :value="editor.saturation" type="range" min="-60" max="60" @input="updateEditorNumberField('saturation', $event)" /></div>
+          <div class="slider-row"><span>Tone depth</span><input :value="editor.toneDepth" type="range" min="-100" max="100" @input="updateEditorNumberField('toneDepth', $event)" /></div>
+          <div class="slider-row"><span>Shadows level</span><input :value="editor.shadowsLevel" type="range" min="-100" max="100" @input="updateEditorNumberField('shadowsLevel', $event)" /></div>
+          <div class="slider-row"><span>Highlights level</span><input :value="editor.highlightsLevel" type="range" min="-100" max="100" @input="updateEditorNumberField('highlightsLevel', $event)" /></div>
+          <div class="slider-row"><span>Sharpness</span><input :value="editor.sharpness" type="range" min="0" max="100" @input="updateEditorNumberField('sharpness', $event)" /></div>
+          <div class="slider-row"><span>Definition</span><input :value="editor.definition" type="range" min="-100" max="100" @input="updateEditorNumberField('definition', $event)" /></div>
+          <div class="slider-row"><span>Vignette</span><input :value="editor.vignette" type="range" min="0" max="100" @input="updateEditorNumberField('vignette', $event)" /></div>
+          <div class="slider-row"><span>Glamour</span><input :value="editor.glamour" type="range" min="0" max="100" @input="updateEditorNumberField('glamour', $event)" /></div>
+          <div class="slider-row"><span>Grayscale</span><input :value="editor.grayscale" type="range" min="0" max="100" @input="updateEditorNumberField('grayscale', $event)" /></div>
+          <div class="slider-row"><span>Sepia</span><input :value="editor.sepia" type="range" min="0" max="100" @input="updateEditorNumberField('sepia', $event)" /></div>
+          <div class="slider-row"><span>Crop zoom</span><input :value="editor.cropZoom" type="range" min="0" max="60" @input="updateEditorNumberField('cropZoom', $event)" /></div>
+          <div class="slider-row"><span>Rotate</span><input :value="editor.rotate" type="range" min="-180" max="180" step="90" @input="updateEditorNumberField('rotate', $event)" /></div>
           <div class="slider-row switches">
             <span>Mirror</span>
             <div class="switch-group">
-              <label><input v-model="editor.flipX" type="checkbox" /> Horizontal</label>
-              <label><input v-model="editor.flipY" type="checkbox" /> Vertical</label>
+              <label><input :checked="editor.flipX" type="checkbox" @change="updateEditorBooleanField('flipX', $event)" /> Horizontal</label>
+              <label><input :checked="editor.flipY" type="checkbox" @change="updateEditorBooleanField('flipY', $event)" /> Vertical</label>
             </div>
           </div>
         </div>
@@ -262,26 +275,26 @@ onBeforeUnmount(() => {
 
       <div class="editor-mobile-control">
         <div v-if="activeTabModel === 'previewScale'" class="slider-row"><span>Preview scale</span><input v-model="previewScaleModel" type="range" min="25" max="300" /></div>
-        <div v-else-if="activeTabModel === 'temperature'" class="slider-row"><span>Temperature</span><input v-model="editor.temperature" type="range" min="-100" max="100" /></div>
-        <div v-else-if="activeTabModel === 'brightness'" class="slider-row"><span>Brightness</span><input v-model="editor.brightness" type="range" min="-60" max="60" /></div>
-        <div v-else-if="activeTabModel === 'contrast'" class="slider-row"><span>Contrast</span><input v-model="editor.contrast" type="range" min="-60" max="60" /></div>
-        <div v-else-if="activeTabModel === 'saturation'" class="slider-row"><span>Saturation</span><input v-model="editor.saturation" type="range" min="-60" max="60" /></div>
-        <div v-else-if="activeTabModel === 'toneDepth'" class="slider-row"><span>Tone depth</span><input v-model="editor.toneDepth" type="range" min="-100" max="100" /></div>
-        <div v-else-if="activeTabModel === 'shadowsLevel'" class="slider-row"><span>Shadows level</span><input v-model="editor.shadowsLevel" type="range" min="-100" max="100" /></div>
-        <div v-else-if="activeTabModel === 'highlightsLevel'" class="slider-row"><span>Highlights level</span><input v-model="editor.highlightsLevel" type="range" min="-100" max="100" /></div>
-        <div v-else-if="activeTabModel === 'sharpness'" class="slider-row"><span>Sharpness</span><input v-model="editor.sharpness" type="range" min="0" max="100" /></div>
-        <div v-else-if="activeTabModel === 'definition'" class="slider-row"><span>Definition</span><input v-model="editor.definition" type="range" min="-100" max="100" /></div>
-        <div v-else-if="activeTabModel === 'vignette'" class="slider-row"><span>Vignette</span><input v-model="editor.vignette" type="range" min="0" max="100" /></div>
-        <div v-else-if="activeTabModel === 'glamour'" class="slider-row"><span>Glamour</span><input v-model="editor.glamour" type="range" min="0" max="100" /></div>
-        <div v-else-if="activeTabModel === 'grayscale'" class="slider-row"><span>Grayscale</span><input v-model="editor.grayscale" type="range" min="0" max="100" /></div>
-        <div v-else-if="activeTabModel === 'sepia'" class="slider-row"><span>Sepia</span><input v-model="editor.sepia" type="range" min="0" max="100" /></div>
-        <div v-else-if="activeTabModel === 'cropZoom'" class="slider-row"><span>Crop zoom</span><input v-model="editor.cropZoom" type="range" min="0" max="60" /></div>
-        <div v-else-if="activeTabModel === 'rotate'" class="slider-row"><span>Rotate</span><input v-model="editor.rotate" type="range" min="-180" max="180" step="90" /></div>
+        <div v-else-if="activeTabModel === 'temperature'" class="slider-row"><span>Temperature</span><input :value="editor.temperature" type="range" min="-100" max="100" @input="updateEditorNumberField('temperature', $event)" /></div>
+        <div v-else-if="activeTabModel === 'brightness'" class="slider-row"><span>Brightness</span><input :value="editor.brightness" type="range" min="-60" max="60" @input="updateEditorNumberField('brightness', $event)" /></div>
+        <div v-else-if="activeTabModel === 'contrast'" class="slider-row"><span>Contrast</span><input :value="editor.contrast" type="range" min="-60" max="60" @input="updateEditorNumberField('contrast', $event)" /></div>
+        <div v-else-if="activeTabModel === 'saturation'" class="slider-row"><span>Saturation</span><input :value="editor.saturation" type="range" min="-60" max="60" @input="updateEditorNumberField('saturation', $event)" /></div>
+        <div v-else-if="activeTabModel === 'toneDepth'" class="slider-row"><span>Tone depth</span><input :value="editor.toneDepth" type="range" min="-100" max="100" @input="updateEditorNumberField('toneDepth', $event)" /></div>
+        <div v-else-if="activeTabModel === 'shadowsLevel'" class="slider-row"><span>Shadows level</span><input :value="editor.shadowsLevel" type="range" min="-100" max="100" @input="updateEditorNumberField('shadowsLevel', $event)" /></div>
+        <div v-else-if="activeTabModel === 'highlightsLevel'" class="slider-row"><span>Highlights level</span><input :value="editor.highlightsLevel" type="range" min="-100" max="100" @input="updateEditorNumberField('highlightsLevel', $event)" /></div>
+        <div v-else-if="activeTabModel === 'sharpness'" class="slider-row"><span>Sharpness</span><input :value="editor.sharpness" type="range" min="0" max="100" @input="updateEditorNumberField('sharpness', $event)" /></div>
+        <div v-else-if="activeTabModel === 'definition'" class="slider-row"><span>Definition</span><input :value="editor.definition" type="range" min="-100" max="100" @input="updateEditorNumberField('definition', $event)" /></div>
+        <div v-else-if="activeTabModel === 'vignette'" class="slider-row"><span>Vignette</span><input :value="editor.vignette" type="range" min="0" max="100" @input="updateEditorNumberField('vignette', $event)" /></div>
+        <div v-else-if="activeTabModel === 'glamour'" class="slider-row"><span>Glamour</span><input :value="editor.glamour" type="range" min="0" max="100" @input="updateEditorNumberField('glamour', $event)" /></div>
+        <div v-else-if="activeTabModel === 'grayscale'" class="slider-row"><span>Grayscale</span><input :value="editor.grayscale" type="range" min="0" max="100" @input="updateEditorNumberField('grayscale', $event)" /></div>
+        <div v-else-if="activeTabModel === 'sepia'" class="slider-row"><span>Sepia</span><input :value="editor.sepia" type="range" min="0" max="100" @input="updateEditorNumberField('sepia', $event)" /></div>
+        <div v-else-if="activeTabModel === 'cropZoom'" class="slider-row"><span>Crop zoom</span><input :value="editor.cropZoom" type="range" min="0" max="60" @input="updateEditorNumberField('cropZoom', $event)" /></div>
+        <div v-else-if="activeTabModel === 'rotate'" class="slider-row"><span>Rotate</span><input :value="editor.rotate" type="range" min="-180" max="180" step="90" @input="updateEditorNumberField('rotate', $event)" /></div>
         <div v-else class="slider-row switches">
           <span>Mirror</span>
           <div class="switch-group">
-            <label><input v-model="editor.flipX" type="checkbox" /> Horizontal</label>
-            <label><input v-model="editor.flipY" type="checkbox" /> Vertical</label>
+            <label><input :checked="editor.flipX" type="checkbox" @change="updateEditorBooleanField('flipX', $event)" /> Horizontal</label>
+            <label><input :checked="editor.flipY" type="checkbox" @change="updateEditorBooleanField('flipY', $event)" /> Vertical</label>
           </div>
         </div>
       </div>

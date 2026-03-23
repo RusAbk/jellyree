@@ -1,6 +1,7 @@
 import { computed, type Ref } from 'vue'
 import type { MediaItem } from '../api'
 import type { CropDragMode, CropDragState, EditorState } from './useEditorState'
+import { extractCssPreviewAdjustments, normalizeEditorAdjustments } from '../../../shared/editor-adjustments'
 
 type UseEditorPreviewParams = {
   editor: EditorState
@@ -25,22 +26,25 @@ export function useEditorPreview(params: UseEditorPreviewParams) {
   }))
 
   function mediaFilterStyleFromEditor() {
-    const temperature = Number(editor.temperature || 0)
-    const brightness = 100 + Number(editor.brightness || 0)
-    const contrast = 100 + Number(editor.contrast || 0)
-    const saturation = 100 + Number(editor.saturation || 0)
-    const toneDepth = Number(editor.toneDepth || 0)
-    const shadowsLevel = Number(editor.shadowsLevel || 0)
-    const highlightsLevel = Number(editor.highlightsLevel || 0)
-    const sharpness = Number(editor.sharpness || 0)
-    const definition = Number(editor.definition || 0)
-    const glamour = Number(editor.glamour || 0)
-    const zoom = 1 + Number(editor.cropZoom || 0) / 100
-    const rotate = Number(editor.rotate || 0)
-    const flipX = editor.flipX ? -1 : 1
-    const flipY = editor.flipY ? -1 : 1
-    const grayscale = Number(editor.grayscale || 0)
-    const sepia = Number(editor.sepia || 0)
+    const normalized = normalizeEditorAdjustments(editor as unknown as Record<string, unknown>)
+    const cssAdjustments = extractCssPreviewAdjustments(normalized)
+
+    const temperature = cssAdjustments.temperature
+    const brightness = 100 + cssAdjustments.brightness
+    const contrast = 100 + cssAdjustments.contrast
+    const saturation = 100 + cssAdjustments.saturation
+    const toneDepth = cssAdjustments.toneDepth
+    const shadowsLevel = cssAdjustments.shadowsLevel
+    const highlightsLevel = cssAdjustments.highlightsLevel
+    const sharpness = cssAdjustments.sharpness
+    const definition = cssAdjustments.definition
+    const glamour = cssAdjustments.glamour
+    const zoom = 1 + cssAdjustments.cropZoom / 100
+    const rotate = cssAdjustments.rotate
+    const flipX = cssAdjustments.flipX ? -1 : 1
+    const flipY = cssAdjustments.flipY ? -1 : 1
+    const grayscale = cssAdjustments.grayscale
+    const sepia = cssAdjustments.sepia
     const warmTint = Math.max(0, temperature / 100)
     const coolTint = Math.max(0, -temperature / 100)
     const depthContrast = toneDepth / 2.2
@@ -67,7 +71,7 @@ export function useEditorPreview(params: UseEditorPreviewParams) {
     return {
       filter: `brightness(${finalBrightness}%) contrast(${finalContrast}%) saturate(${finalSaturation}%) grayscale(${grayscale}%) sepia(${finalSepia}%) hue-rotate(${temperature * 0.25}deg) blur(${glamourBlur}px)`,
       transform: `scale(${zoom * frameFitScale}) rotate(${rotate}deg) scaleX(${flipX}) scaleY(${flipY})`,
-      clipPath: `inset(${editor.cropY}% ${100 - editor.cropX - editor.cropWidth}% ${100 - editor.cropY - editor.cropHeight}% ${editor.cropX}%)`,
+      clipPath: `inset(${cssAdjustments.cropY}% ${100 - cssAdjustments.cropX - cssAdjustments.cropWidth}% ${100 - cssAdjustments.cropY - cssAdjustments.cropHeight}% ${cssAdjustments.cropX}%)`,
     }
   }
 

@@ -6,6 +6,12 @@ import PhotoEditorPanel from './components/PhotoEditorPanel.vue'
 import { useEditorActions } from './composables/useEditorActions'
 import { useEditorPreview } from './composables/useEditorPreview'
 import { useEditorState } from './composables/useEditorState'
+import {
+  adjustmentsToRequestPayload,
+  extractServerPreviewAdjustments,
+  hasServerPreviewAdjustments,
+  normalizeEditorAdjustments,
+} from '../../shared/editor-adjustments'
 
 type AlbumTreeNode = {
   album: Album
@@ -148,6 +154,10 @@ const suppressTagsCommitOnBlur = ref(false)
 const suppressLightboxTagsCommitOnBlur = ref(false)
 const lightboxTagsEditing = ref(false)
 const lightboxZoom = ref(1)
+const editorServerPreviewSrc = ref('')
+let editorServerPreviewTimer: ReturnType<typeof setTimeout> | null = null
+let editorServerPreviewAbortController: AbortController | null = null
+let editorServerPreviewRunId = 0
 
 const touchGesture = reactive({
   timer: null as ReturnType<typeof setTimeout> | null,
@@ -4152,10 +4162,88 @@ function snapshotEditorAdjustments() {
   }
 }
 
+function revokeEditorServerPreviewSrc() {
+  if (!editorServerPreviewSrc.value) return
+  URL.revokeObjectURL(editorServerPreviewSrc.value)
+  editorServerPreviewSrc.value = ''
+}
+
+function cancelEditorServerPreviewRequest() {
+  if (editorServerPreviewTimer) {
+    clearTimeout(editorServerPreviewTimer)
+    editorServerPreviewTimer = null
+  }
+  if (editorServerPreviewAbortController) {
+    editorServerPreviewAbortController.abort()
+    editorServerPreviewAbortController = null
+  }
+}
+
+function editorPreviewSource() {
+  return editorServerPreviewSrc.value || activeEditorThumbSrc.value
+}
+
+async function refreshEditorServerPreview() {
+  if (!editModeOpen.value || !activeMedia.value || !token.value) {
+    cancelEditorServerPreviewRequest()
+    revokeEditorServerPreviewSrc()
+    return
+  }
+
+  if (!canPreviewInBrowser(activeMedia.value)) {
+    cancelEditorServerPreviewRequest()
+    revokeEditorServerPreviewSrc()
+    return
+  }
+
+  const normalized = normalizeEditorAdjustments(snapshotEditorAdjustments())
+  if (!hasServerPreviewAdjustments(normalized)) {
+    cancelEditorServerPreviewRequest()
+    revokeEditorServerPreviewSrc()
+    return
+  }
+
+  const previewPayload = adjustmentsToRequestPayload(extractServerPreviewAdjustments(normalized))
+  editorServerPreviewAbortController?.abort()
+  const runId = ++editorServerPreviewRunId
+  const controller = new AbortController()
+  editorServerPreviewAbortController = controller
+
+  try {
+    const blob = await api.previewMediaEdits(token.value, activeMedia.value.id, previewPayload, controller.signal)
+    if (runId !== editorServerPreviewRunId) return
+
+    const objectUrl = URL.createObjectURL(blob)
+    revokeEditorServerPreviewSrc()
+    editorServerPreviewSrc.value = objectUrl
+  } catch (error) {
+    if ((error as { name?: string }).name === 'AbortError') return
+    message.value = (error as Error).message
+  } finally {
+    if (editorServerPreviewAbortController === controller) {
+      editorServerPreviewAbortController = null
+    }
+  }
+}
+
+function scheduleEditorServerPreviewRefresh() {
+  if (editorServerPreviewTimer) {
+    clearTimeout(editorServerPreviewTimer)
+  }
+  editorServerPreviewTimer = setTimeout(() => {
+    editorServerPreviewTimer = null
+    void refreshEditorServerPreview()
+  }, 140)
+}
+
 function applyEditorAdjustmentSnapshot(snapshot: Record<string, number | boolean>) {
   for (const [key, value] of Object.entries(snapshot)) {
     ;(editor as unknown as Record<string, number | boolean>)[key] = value
   }
+}
+
+function onEditorFieldUpdate(payload: { key: string; value: number | boolean }) {
+  ;(editor as unknown as Record<string, number | boolean>)[payload.key] = payload.value
 }
 
 function copyEditorEdits() {
@@ -4203,14 +4291,14 @@ function toggleClippingOverlay() {
 }
 
 async function updateEditorHistogram() {
-  if (!editModeOpen.value || !activeEditorThumbSrc.value) {
+  const source = editorPreviewSource()
+  if (!editModeOpen.value || !source) {
     editorHistogram.value = Array.from({ length: 32 }, () => 0)
     editorClipStats.shadows = 0
     editorClipStats.highlights = 0
     return
   }
 
-  const source = activeEditorThumbSrc.value
   await new Promise<void>((resolve) => {
     const image = new Image()
     image.decoding = 'async'
@@ -4374,6 +4462,8 @@ function logout() {
   activeMediaId.value = null
   lightboxOpen.value = false
   editModeOpen.value = false
+  cancelEditorServerPreviewRequest()
+  revokeEditorServerPreviewSrc()
   localStorage.removeItem('jellyree_token')
   localStorage.removeItem('jellyree_user')
 }
@@ -4426,6 +4516,8 @@ watch(
 )
 
 watch(activeMedia, (item) => {
+  cancelEditorServerPreviewRequest()
+  revokeEditorServerPreviewSrc()
   applyMediaToEditor(item)
   if (item) {
     initializeLightboxTagEditor(item.mediaTags.map((entry) => entry.tag.name).join(', '))
@@ -4452,12 +4544,49 @@ watch(editModeOpen, (isOpen) => {
   if (!isOpen) {
     beforeAfterActive.value = false
     clippingOverlayEnabled.value = false
+    cancelEditorServerPreviewRequest()
+    revokeEditorServerPreviewSrc()
+  } else {
+    scheduleEditorServerPreviewRefresh()
   }
   void updateEditorHistogram()
 })
 
 watch(
-  () => activeEditorThumbSrc.value,
+  () => [
+    token.value,
+    activeMediaId.value,
+    editModeOpen.value,
+    editor.temperature,
+    editor.brightness,
+    editor.contrast,
+    editor.saturation,
+    editor.toneDepth,
+    editor.shadowsLevel,
+    editor.highlightsLevel,
+    editor.sharpness,
+    editor.definition,
+    editor.vignette,
+    editor.glamour,
+    editor.grayscale,
+    editor.sepia,
+    editor.cropZoom,
+    editor.rotate,
+    editor.flipX,
+    editor.flipY,
+    editor.cropX,
+    editor.cropY,
+    editor.cropWidth,
+    editor.cropHeight,
+  ],
+  () => {
+    if (!editModeOpen.value) return
+    scheduleEditorServerPreviewRefresh()
+  },
+)
+
+watch(
+  () => [activeEditorThumbSrc.value, editorServerPreviewSrc.value],
   () => {
     void updateEditorHistogram()
   },
@@ -4608,6 +4737,8 @@ onBeforeUnmount(() => {
     clearTimeout(nearViewportThumbLoadTimer)
     nearViewportThumbLoadTimer = null
   }
+  cancelEditorServerPreviewRequest()
+  revokeEditorServerPreviewSrc()
   pendingThumbUpdates.clear()
   clearLightboxFullImage()
   if (toastTimer) {
@@ -5853,7 +5984,7 @@ onBeforeUnmount(() => {
       <PhotoEditorPanel
         :open="editModeOpen"
         :active-media="activeMedia"
-        :thumb-src="activeMedia ? (thumbs[activeMedia.id] || '') : ''"
+        :thumb-src="activeMedia ? editorPreviewSource() : ''"
         :can-preview="Boolean(activeMedia && canPreviewInBrowser(activeMedia))"
         :editor="editor"
         :editor-preview-scale="editorPreviewScale"
@@ -5871,6 +6002,7 @@ onBeforeUnmount(() => {
         :clipping-stats="editorClipStats"
         @update:editor-preview-scale="editorPreviewScale = $event"
         @update:active-editor-mobile-tab="activeEditorMobileTab = $event"
+        @update:editor-field="onEditorFieldUpdate"
         @close="closeEditMode"
         @crop-move="onCropPointerMove"
         @stop-crop="stopCropDrag"

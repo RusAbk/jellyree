@@ -351,6 +351,29 @@ export const api = {
       },
       token,
     ),
+  previewMediaEdits: async (
+    token: string,
+    mediaId: string,
+    adjustments: Record<string, number>,
+    signal?: AbortSignal,
+  ) => {
+    const response = await fetch(`${API_BASE}/media/${encodeURIComponent(mediaId)}/preview-render`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ adjustments }),
+      signal,
+    })
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      throw new Error((data as { message?: string; error?: string })?.message || (data as { message?: string; error?: string })?.error || 'Preview render failed')
+    }
+
+    return response.blob()
+  },
   revertMediaEdits: (token: string, mediaId: string) =>
     request<MediaItem>(
       `/media/${mediaId}/revert-edits`,

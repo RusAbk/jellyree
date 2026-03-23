@@ -1,5 +1,6 @@
 import type { Ref } from 'vue'
 import type { EditorMobileTab, EditorState } from './useEditorState'
+import { adjustmentsToRequestPayload, normalizeEditorAdjustments } from '../../../shared/editor-adjustments'
 
 type UseEditorActionsParams = {
   token: Ref<string>
@@ -64,7 +65,7 @@ export function useEditorActions(params: UseEditorActionsParams) {
 
     try {
       const mediaId = activeMedia.value.id
-      await applyEditsRequest(token.value, mediaId, {
+      const normalized = normalizeEditorAdjustments({
         temperature: editor.temperature,
         brightness: editor.brightness,
         contrast: editor.contrast,
@@ -87,6 +88,7 @@ export function useEditorActions(params: UseEditorActionsParams) {
         cropWidth: editor.cropWidth,
         cropHeight: editor.cropHeight,
       })
+      await applyEditsRequest(token.value, mediaId, adjustmentsToRequestPayload(normalized))
       await loadAll()
       clearThumb(mediaId)
       clearLightboxFullImage(mediaId)
