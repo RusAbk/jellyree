@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { MediaItem } from '../api'
 import type { CropDragMode, EditorMobileTab, EditorState } from '../composables/useEditorState'
 
@@ -60,6 +60,264 @@ function onStartCrop(event: PointerEvent, mode: CropDragMode) {
   emit('startCrop', event, mode)
 }
 
+const processedPreviewSrc = ref('')
+let previewRenderTimer: ReturnType<typeof setTimeout> | null = null
+let previewRenderRunId = 0
+
+function clampChannel(value: number) {
+  return value < 0 ? 0 : value > 255 ? 255 : value
+}
+
+function hasJsAdjustments(editor: EditorState) {
+  return (
+    editor.temperature !== 0 ||
+    editor.brightness !== 0 ||
+    editor.contrast !== 0 ||
+    editor.saturation !== 0 ||
+    editor.toneDepth !== 0 ||
+    editor.shadowsLevel !== 0 ||
+    editor.highlightsLevel !== 0 ||
+    editor.sharpness !== 0 ||
+    editor.definition !== 0 ||
+    editor.vignette !== 0 ||
+    editor.glamour !== 0 ||
+    editor.grayscale !== 0 ||
+    editor.sepia !== 0
+  )
+}
+
+function averageBlur(source: Uint8ClampedArray, width: number, height: number) {
+  const result = new Uint8ClampedArray(source.length)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let r = 0
+      let g = 0
+      let b = 0
+      let count = 0
+      for (let oy = -1; oy <= 1; oy += 1) {
+        const sy = y + oy
+        if (sy < 0 || sy >= height) continue
+        for (let ox = -1; ox <= 1; ox += 1) {
+          const sx = x + ox
+          if (sx < 0 || sx >= width) continue
+          const idx = (sy * width + sx) * 4
+          r += source[idx] || 0
+          g += source[idx + 1] || 0
+          b += source[idx + 2] || 0
+          count += 1
+        }
+      }
+      const target = (y * width + x) * 4
+      result[target] = Math.round(r / Math.max(1, count))
+      result[target + 1] = Math.round(g / Math.max(1, count))
+      result[target + 2] = Math.round(b / Math.max(1, count))
+      result[target + 3] = source[target + 3] || 255
+    }
+  }
+  return result
+}
+
+function applyJsAdjustments(data: ImageData, editor: EditorState) {
+  const pixels = data.data
+  const width = data.width
+  const height = data.height
+
+  const tempShift = editor.temperature * 0.95
+  const brightnessShift = editor.brightness * 2.15
+  const baseContrast = 1 + editor.contrast / 100
+  const depthContrast = 1 + editor.toneDepth / 230
+  const definitionContrast = 1 + editor.definition / 280
+  const totalContrast = Math.max(0.05, baseContrast * depthContrast * definitionContrast)
+  const saturationFactor = Math.max(0, 1 + editor.saturation / 100)
+  const shadowsLift = editor.shadowsLevel / 100
+  const highlightsCut = editor.highlightsLevel / 100
+  const grayscaleMix = Math.max(0, Math.min(1, editor.grayscale / 100))
+  const sepiaMix = Math.max(0, Math.min(1, editor.sepia / 100))
+  const glamourMix = Math.max(0, Math.min(0.45, editor.glamour / 180))
+  const detailBoost = Math.max(0, (editor.sharpness + Math.max(0, editor.definition)) / 250)
+
+  let blurredForBlend: Uint8ClampedArray | null = null
+  if (glamourMix > 0 || detailBoost > 0) {
+    blurredForBlend = averageBlur(pixels, width, height)
+  }
+
+  const centerX = width / 2
+  const centerY = height / 2
+  const radius = Math.max(1, Math.min(width, height) * 0.68)
+  const vignettePower = Math.max(0, Math.min(0.58, editor.vignette / 170))
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = (y * width + x) * 4
+      const alpha = pixels[i + 3] || 0
+      if (alpha < 8) continue
+
+      let r = pixels[i] || 0
+      let g = pixels[i + 1] || 0
+      let b = pixels[i + 2] || 0
+
+      if (blurredForBlend && glamourMix > 0) {
+        r = r * (1 - glamourMix) + (blurredForBlend[i] || 0) * glamourMix
+        g = g * (1 - glamourMix) + (blurredForBlend[i + 1] || 0) * glamourMix
+        b = b * (1 - glamourMix) + (blurredForBlend[i + 2] || 0) * glamourMix
+      }
+
+      r += tempShift * 0.52
+      g += tempShift * 0.12
+      b -= tempShift * 0.5
+
+      r += brightnessShift
+      g += brightnessShift
+      b += brightnessShift
+
+      r = (r - 128) * totalContrast + 128
+      g = (g - 128) * totalContrast + 128
+      b = (b - 128) * totalContrast + 128
+
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+      const satBase = lum
+      r = satBase + (r - satBase) * saturationFactor
+      g = satBase + (g - satBase) * saturationFactor
+      b = satBase + (b - satBase) * saturationFactor
+
+      if (shadowsLift !== 0 && lum < 128) {
+        const weight = (128 - lum) / 128
+        const lift = shadowsLift * 52 * weight
+        r += lift
+        g += lift
+        b += lift
+      }
+
+      if (highlightsCut !== 0 && lum > 128) {
+        const weight = (lum - 128) / 127
+        const cut = highlightsCut * 60 * weight
+        r -= cut
+        g -= cut
+        b -= cut
+      }
+
+      if (grayscaleMix > 0) {
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b
+        r = r * (1 - grayscaleMix) + gray * grayscaleMix
+        g = g * (1 - grayscaleMix) + gray * grayscaleMix
+        b = b * (1 - grayscaleMix) + gray * grayscaleMix
+      }
+
+      if (sepiaMix > 0) {
+        const sr = 0.393 * r + 0.769 * g + 0.189 * b
+        const sg = 0.349 * r + 0.686 * g + 0.168 * b
+        const sb = 0.272 * r + 0.534 * g + 0.131 * b
+        r = r * (1 - sepiaMix) + sr * sepiaMix
+        g = g * (1 - sepiaMix) + sg * sepiaMix
+        b = b * (1 - sepiaMix) + sb * sepiaMix
+      }
+
+      if (blurredForBlend && detailBoost > 0) {
+        r += (r - (blurredForBlend[i] || 0)) * detailBoost
+        g += (g - (blurredForBlend[i + 1] || 0)) * detailBoost
+        b += (b - (blurredForBlend[i + 2] || 0)) * detailBoost
+      }
+
+      if (vignettePower > 0) {
+        const dx = x - centerX
+        const dy = y - centerY
+        const d = Math.sqrt(dx * dx + dy * dy)
+        const t = Math.max(0, Math.min(1, (d - radius * 0.62) / (radius * 0.7)))
+        const darken = 1 - vignettePower * t * t
+        r *= darken
+        g *= darken
+        b *= darken
+      }
+
+      pixels[i] = clampChannel(Math.round(r))
+      pixels[i + 1] = clampChannel(Math.round(g))
+      pixels[i + 2] = clampChannel(Math.round(b))
+    }
+  }
+}
+
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image()
+    image.decoding = 'async'
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('Preview image load failed'))
+    image.src = src
+  })
+}
+
+async function renderJsPreview() {
+  const runId = ++previewRenderRunId
+  if (!props.thumbSrc || !props.canPreview || props.beforeAfterActive || !hasJsAdjustments(props.editor)) {
+    processedPreviewSrc.value = ''
+    return
+  }
+
+  try {
+    const image = await loadImage(props.thumbSrc)
+    if (runId !== previewRenderRunId) return
+
+    const maxSide = 1600
+    const scale = Math.max(1, Math.max(image.naturalWidth, image.naturalHeight) / maxSide)
+    const width = Math.max(1, Math.round(image.naturalWidth / scale))
+    const height = Math.max(1, Math.round(image.naturalHeight / scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (!context) {
+      processedPreviewSrc.value = ''
+      return
+    }
+
+    context.drawImage(image, 0, 0, width, height)
+    const data = context.getImageData(0, 0, width, height)
+    applyJsAdjustments(data, props.editor)
+    context.putImageData(data, 0, 0)
+
+    if (runId !== previewRenderRunId) return
+    processedPreviewSrc.value = canvas.toDataURL('image/jpeg', 0.94)
+  } catch {
+    processedPreviewSrc.value = ''
+  }
+}
+
+function scheduleJsPreviewRender() {
+  if (previewRenderTimer) {
+    clearTimeout(previewRenderTimer)
+  }
+  previewRenderTimer = setTimeout(() => {
+    previewRenderTimer = null
+    void renderJsPreview()
+  }, 35)
+}
+
+watch(
+  () => [
+    props.thumbSrc,
+    props.canPreview,
+    props.beforeAfterActive,
+    props.editor.temperature,
+    props.editor.brightness,
+    props.editor.contrast,
+    props.editor.saturation,
+    props.editor.toneDepth,
+    props.editor.shadowsLevel,
+    props.editor.highlightsLevel,
+    props.editor.sharpness,
+    props.editor.definition,
+    props.editor.vignette,
+    props.editor.glamour,
+    props.editor.grayscale,
+    props.editor.sepia,
+  ],
+  () => {
+    scheduleJsPreviewRender()
+  },
+  { immediate: true },
+)
+
 function updateEditorNumberField(key: keyof EditorState, event: Event) {
   const target = event.target as HTMLInputElement | null
   if (!target) return
@@ -107,6 +365,11 @@ onBeforeUnmount(() => {
     clearTimeout(beforeAfterTouchTimer)
     beforeAfterTouchTimer = null
   }
+  if (previewRenderTimer) {
+    clearTimeout(previewRenderTimer)
+    previewRenderTimer = null
+  }
+  previewRenderRunId += 1
 })
 </script>
 
@@ -138,9 +401,9 @@ onBeforeUnmount(() => {
             <div class="editor-image-frame" :style="editorPreviewFrameStyle">
               <img
                 class="overlay-image editor-image"
-                :src="thumbSrc"
+                :src="beforeAfterActive ? thumbSrc : (processedPreviewSrc || thumbSrc)"
                 :alt="activeMedia.filename"
-                :style="beforeAfterActive ? {} : editorFilterStyle"
+                :style="editorFilterStyle"
               />
               <div
                 v-if="clippingOverlayEnabled"

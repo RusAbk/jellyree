@@ -1,7 +1,7 @@
 import { computed, type Ref } from 'vue'
 import type { MediaItem } from '../api'
 import type { CropDragMode, CropDragState, EditorState } from './useEditorState'
-import { extractCssPreviewAdjustments, normalizeEditorAdjustments } from '../editor-adjustments'
+import { normalizeEditorAdjustments } from '../editor-adjustments'
 
 type UseEditorPreviewParams = {
   editor: EditorState
@@ -27,36 +27,12 @@ export function useEditorPreview(params: UseEditorPreviewParams) {
 
   function mediaFilterStyleFromEditor() {
     const normalized = normalizeEditorAdjustments(editor as unknown as Record<string, unknown>)
-    const cssAdjustments = extractCssPreviewAdjustments(normalized)
+    const cssAdjustments = normalized
 
-    const temperature = cssAdjustments.temperature
-    const brightness = 100 + cssAdjustments.brightness
-    const contrast = 100 + cssAdjustments.contrast
-    const saturation = 100 + cssAdjustments.saturation
-    const toneDepth = cssAdjustments.toneDepth
-    const shadowsLevel = cssAdjustments.shadowsLevel
-    const highlightsLevel = cssAdjustments.highlightsLevel
-    const sharpness = cssAdjustments.sharpness
-    const definition = cssAdjustments.definition
-    const glamour = cssAdjustments.glamour
     const zoom = 1 + cssAdjustments.cropZoom / 100
     const rotate = cssAdjustments.rotate
     const flipX = cssAdjustments.flipX ? -1 : 1
     const flipY = cssAdjustments.flipY ? -1 : 1
-    const grayscale = cssAdjustments.grayscale
-    const sepia = cssAdjustments.sepia
-    const warmTint = Math.max(0, temperature / 100)
-    const coolTint = Math.max(0, -temperature / 100)
-    const depthContrast = toneDepth / 2.2
-    const liftedBrightness = shadowsLevel / 2.4
-    const reducedHighlights = -highlightsLevel / 2.6
-    const glamourBlur = Math.max(0, glamour / 35)
-    const definitionContrast = definition / 3
-    const detailContrast = sharpness / 2.8
-    const finalContrast = contrast + depthContrast + definitionContrast + detailContrast
-    const finalBrightness = brightness + liftedBrightness + reducedHighlights
-    const finalSaturation = saturation + warmTint * 6 - coolTint * 4
-    const finalSepia = Math.max(0, sepia + warmTint * 10)
 
     const normalizedRotate = ((Math.round(rotate / 90) * 90) % 360 + 360) % 360
     const isQuarterTurn = normalizedRotate === 90 || normalizedRotate === 270
@@ -69,7 +45,7 @@ export function useEditorPreview(params: UseEditorPreviewParams) {
     }
 
     return {
-      filter: `brightness(${finalBrightness}%) contrast(${finalContrast}%) saturate(${finalSaturation}%) grayscale(${grayscale}%) sepia(${finalSepia}%) hue-rotate(${temperature * 0.25}deg) blur(${glamourBlur}px)`,
+      filter: 'none',
       transform: `scale(${zoom * frameFitScale}) rotate(${rotate}deg) scaleX(${flipX}) scaleY(${flipY})`,
       clipPath: `inset(${cssAdjustments.cropY}% ${100 - cssAdjustments.cropX - cssAdjustments.cropWidth}% ${100 - cssAdjustments.cropY - cssAdjustments.cropHeight}% ${cssAdjustments.cropX}%)`,
     }

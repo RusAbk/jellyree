@@ -94,7 +94,6 @@ export function useEditorActions(params: UseEditorActionsParams) {
       clearLightboxFullImage(mediaId)
       await loadThumb(mediaId)
       message.value = 'Edits permanently applied'
-      closeEditMode()
     } catch (error) {
       message.value = (error as Error).message
     } finally {
