@@ -1,6 +1,6 @@
 import type { Ref } from 'vue'
 import type { EditorMobileTab, EditorState } from './useEditorState'
-import { adjustmentsToRequestPayload, normalizeEditorAdjustments } from '../../../shared/editor-adjustments'
+import { adjustmentsToRequestPayload, normalizeEditorAdjustments } from '../editor-adjustments'
 
 type UseEditorActionsParams = {
   token: Ref<string>

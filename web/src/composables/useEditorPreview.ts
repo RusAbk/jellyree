@@ -1,7 +1,7 @@
 import { computed, type Ref } from 'vue'
 import type { MediaItem } from '../api'
 import type { CropDragMode, CropDragState, EditorState } from './useEditorState'
-import { extractCssPreviewAdjustments, normalizeEditorAdjustments } from '../../../shared/editor-adjustments'
+import { extractCssPreviewAdjustments, normalizeEditorAdjustments } from '../editor-adjustments'
 
 type UseEditorPreviewParams = {
   editor: EditorState

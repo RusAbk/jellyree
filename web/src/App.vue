@@ -11,7 +11,7 @@ import {
   extractServerPreviewAdjustments,
   hasServerPreviewAdjustments,
   normalizeEditorAdjustments,
-} from '../../shared/editor-adjustments'
+} from './editor-adjustments'
 
 type AlbumTreeNode = {
   album: Album

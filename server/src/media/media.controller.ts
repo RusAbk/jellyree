@@ -37,7 +37,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { createOpaqueShareToken } from './share-token';
-import { normalizeEditorAdjustments, type NormalizedEditorAdjustments } from '../../../shared/editor-adjustments';
+import { normalizeEditorAdjustments, type NormalizedEditorAdjustments } from './editor-adjustments';
 
 function toNumber(value: unknown, fallback: number) {
   const parsed = Number(value);
