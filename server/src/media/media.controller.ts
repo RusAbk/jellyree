@@ -1028,6 +1028,7 @@ export class MediaController {
     @Query('favorite') favorite?: string,
     @Query('tag') tag?: string,
     @Query('albumId') albumId?: string,
+    @Query('includeNestedAlbums') includeNestedAlbums?: string,
     @Query('sortBy') sortBy?: string,
     @Query('sortDir') sortDir?: string,
   ) {
@@ -1035,9 +1036,10 @@ export class MediaController {
     const pageSize = clamp(toNumber(limit, 20), 1, 100);
     const offset = Math.max(pageNumber - 1, 0) * pageSize;
     const favoriteOnly = favorite === 'true';
+    const withNestedAlbums = includeNestedAlbums === 'true';
 
     let albumScopeIds: string[] | null = null;
-    if (albumId) {
+    if (albumId && withNestedAlbums) {
       const ownerAlbums = await this.prisma.album.findMany({
         where: { ownerId: req.user!.id },
         select: { id: true, parentId: true },
@@ -1101,7 +1103,7 @@ export class MediaController {
             albumMedia: {
               some: {
                 albumId: {
-                  in: albumScopeIds ?? [albumId],
+                  in: withNestedAlbums ? albumScopeIds ?? [albumId] : [albumId],
                 },
               },
             },

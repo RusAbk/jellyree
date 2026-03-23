@@ -220,6 +220,7 @@ export const api = {
       favorite?: boolean
       tag?: string
       albumId?: string
+      includeNestedAlbums?: boolean
       sortBy?: 'date' | 'name'
       sortDir?: 'asc' | 'desc'
     },
@@ -231,6 +232,7 @@ export const api = {
     if (params?.favorite) searchParams.set('favorite', 'true')
     if (params?.tag) searchParams.set('tag', params.tag)
     if (params?.albumId) searchParams.set('albumId', params.albumId)
+    if (params?.albumId && params?.includeNestedAlbums) searchParams.set('includeNestedAlbums', 'true')
     if (params?.sortBy) searchParams.set('sortBy', params.sortBy)
     if (params?.sortDir) searchParams.set('sortDir', params.sortDir)
     const query = searchParams.toString()

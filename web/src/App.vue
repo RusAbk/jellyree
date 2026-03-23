@@ -25,6 +25,7 @@ type PersistedAppViewState = {
   mediaSortBy: 'date' | 'name'
   mediaDensity: 's' | 'm' | 'l'
   mediaDateGrouping: boolean
+  includeNestedAlbumContent: boolean
   search: string
   activeMediaId: string | null
   lightboxOpen: boolean
@@ -77,6 +78,7 @@ const mediaViewMode = ref<'gallery' | 'files'>('gallery')
 const mediaSortBy = ref<'date' | 'name'>('date')
 const mediaDensity = ref<'s' | 'm' | 'l'>('m')
 const mediaDateGrouping = ref(true)
+const includeNestedAlbumContent = ref(false)
 const search = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -838,6 +840,7 @@ function readPersistedAppViewState(): PersistedAppViewState | null {
       mediaSortBy: normalizedSortBy,
       mediaDensity: normalizedDensity,
       mediaDateGrouping: normalizedDateGrouping,
+      includeNestedAlbumContent: parsed.includeNestedAlbumContent === true,
       search: typeof parsed.search === 'string' ? parsed.search : '',
       activeMediaId: typeof parsed.activeMediaId === 'string' && parsed.activeMediaId ? parsed.activeMediaId : null,
       lightboxOpen: parsed.lightboxOpen === true,
@@ -859,6 +862,7 @@ function persistAppViewState() {
     mediaSortBy: mediaSortBy.value,
     mediaDensity: mediaDensity.value,
     mediaDateGrouping: mediaDateGrouping.value,
+    includeNestedAlbumContent: includeNestedAlbumContent.value,
     search: search.value,
     activeMediaId: activeMediaId.value,
     lightboxOpen: lightboxOpen.value,
@@ -979,6 +983,7 @@ async function applyRouteFromLocation() {
     const persisted = readPersistedAppViewState()
     if (persisted) {
       search.value = persisted.search
+      includeNestedAlbumContent.value = persisted.includeNestedAlbumContent
     }
   } else {
     const persisted = readPersistedAppViewState()
@@ -991,6 +996,7 @@ async function applyRouteFromLocation() {
       mediaSortBy.value = persisted.mediaSortBy
       mediaDensity.value = persisted.mediaDensity
       mediaDateGrouping.value = persisted.mediaDateGrouping
+      includeNestedAlbumContent.value = persisted.includeNestedAlbumContent
       if (persisted.activeSection === 'all') {
         activeAlbumId.value = persisted.activeAlbumId
         activeTagId.value = ''
@@ -2612,6 +2618,7 @@ async function loadAll(options: { clearGrid?: boolean } = {}) {
         q: search.value.trim() || undefined,
         favorite: activeSection.value === 'favorites',
         albumId: activeAlbumId.value || undefined,
+        includeNestedAlbums: includeNestedAlbumContent.value,
         sortBy: mediaSortBy.value,
         sortDir: mediaSortBy.value === 'name' ? 'asc' : 'desc',
       }),
@@ -2668,6 +2675,7 @@ async function loadNextMediaPage() {
       q: search.value.trim() || undefined,
       favorite: activeSection.value === 'favorites',
       albumId: activeAlbumId.value || undefined,
+      includeNestedAlbums: includeNestedAlbumContent.value,
       sortBy: mediaSortBy.value,
       sortDir: mediaSortBy.value === 'name' ? 'asc' : 'desc',
     })
@@ -4710,7 +4718,7 @@ function logout() {
   localStorage.removeItem('jellyree_user')
 }
 
-watch([activeAlbumId, activeSection, search], ([nextAlbumId, nextSection], [prevAlbumId, prevSection]) => {
+watch([activeAlbumId, activeSection, search, includeNestedAlbumContent], ([nextAlbumId, nextSection, _nextSearch, nextIncludeNested], [prevAlbumId, prevSection, _prevSearch, prevIncludeNested]) => {
   if (!token.value) return
   if (activeSection.value === 'favorites') {
     activeAlbumId.value = ''
@@ -4718,7 +4726,10 @@ watch([activeAlbumId, activeSection, search], ([nextAlbumId, nextSection], [prev
   if (activeSection.value === 'tags') {
     activeSection.value = 'all'
   }
-  const isContextSwitch = nextAlbumId !== prevAlbumId || nextSection !== prevSection
+  const isContextSwitch =
+    nextAlbumId !== prevAlbumId ||
+    nextSection !== prevSection ||
+    nextIncludeNested !== prevIncludeNested
   void loadAll({ clearGrid: isContextSwitch })
 })
 
@@ -4748,6 +4759,7 @@ watch(
     mediaSortBy.value,
     mediaDensity.value,
     mediaDateGrouping.value,
+    includeNestedAlbumContent.value,
     search.value,
     activeMediaId.value,
     lightboxOpen.value,
@@ -5452,6 +5464,19 @@ onBeforeUnmount(() => {
                   @click="mediaDateGrouping = !mediaDateGrouping"
                 >
                   {{ mediaDateGrouping ? 'On' : 'Off' }}
+                </button>
+              </div>
+
+              <div class="mini-group">
+                <span class="mini-label">Nested</span>
+                <button
+                  class="chip icon-chip"
+                  :class="{ active: includeNestedAlbumContent }"
+                  :disabled="!activeAlbumId"
+                  :title="includeNestedAlbumContent ? 'Showing current + nested albums' : 'Showing current album only'"
+                  @click="includeNestedAlbumContent = !includeNestedAlbumContent"
+                >
+                  <i class="ri-folders-line" aria-hidden="true"></i>
                 </button>
               </div>
 
