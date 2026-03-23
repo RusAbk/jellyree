@@ -4,6 +4,8 @@ export type CropDragMode = 'move' | 'n' | 's' | 'w' | 'e' | 'nw' | 'ne' | 'sw' |
 
 export type EditorMobileTab =
   | 'previewScale'
+  | 'liquify'
+  | 'stretch'
   | 'temperature'
   | 'brightness'
   | 'contrast'
@@ -170,6 +172,8 @@ export function useEditorState() {
   const activeEditorMobileTab = ref<EditorMobileTab>('temperature')
   const editorMobileTabs: Array<{ key: EditorMobileTab; label: string }> = [
     { key: 'previewScale', label: 'Scale' },
+    { key: 'liquify', label: 'Liquify' },
+    { key: 'stretch', label: 'Stretch' },
     { key: 'temperature', label: 'Temp' },
     { key: 'brightness', label: 'Bright' },
     { key: 'contrast', label: 'Contrast' },

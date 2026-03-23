@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import type { MediaItem } from '../api'
 import type { CropDragMode, EditorMobileTab, EditorState } from '../composables/useEditorState'
 
@@ -12,6 +12,18 @@ type QuickRecipeKey =
   | 'night-rescue'
   | 'portrait-soft'
   | 'bw-pro'
+
+type GeometryTool = 'crop' | 'liquify' | 'stretch'
+type StretchAxis = 'vertical' | 'horizontal'
+
+type LiquifyStroke = {
+  fromX: number
+  fromY: number
+  toX: number
+  toY: number
+  radius: number
+  strength: number
+}
 
 const props = defineProps<{
   open: boolean
@@ -138,8 +150,312 @@ const activeSectionSliders = computed(() => {
   return sectionSliders[desktopSection.value]
 })
 
+const geometryTool = ref<GeometryTool>('crop')
+const liquifyBrushSize = ref(24)
+const liquifyIntensity = ref(56)
+const liquifyStrokes = ref<LiquifyStroke[]>([])
+const liquifyChangeTick = ref(0)
+const liquifyCursor = reactive({
+  visible: false,
+  x: 50,
+  y: 50,
+})
+
+const stretchAxis = ref<StretchAxis>('vertical')
+const stretchBandStart = ref(34)
+const stretchBandEnd = ref(66)
+const stretchAmount = ref(0)
+
+const stageDrag = reactive({
+  active: false,
+  mode: 'none' as 'none' | 'liquify' | 'stretch-start' | 'stretch-end' | 'stretch-band',
+  startX: 0,
+  startY: 0,
+  startNormX: 0,
+  startNormY: 0,
+  originBandStart: 34,
+  originBandEnd: 66,
+  lastNormX: 0,
+  lastNormY: 0,
+})
+
+const stretchOverlayStyle = computed(() => {
+  if (stretchAxis.value === 'vertical') {
+    return {
+      left: `${stretchBandStart.value}%`,
+      width: `${Math.max(0, stretchBandEnd.value - stretchBandStart.value)}%`,
+      top: '0%',
+      height: '100%',
+    }
+  }
+
+  return {
+    top: `${stretchBandStart.value}%`,
+    height: `${Math.max(0, stretchBandEnd.value - stretchBandStart.value)}%`,
+    left: '0%',
+    width: '100%',
+  }
+})
+
+const stretchStartHandleStyle = computed(() => {
+  if (stretchAxis.value === 'vertical') {
+    return {
+      left: `${stretchBandStart.value}%`,
+      top: '50%',
+      transform: 'translate(-50%, -50%)',
+    }
+  }
+
+  return {
+    top: `${stretchBandStart.value}%`,
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+  }
+})
+
+const stretchEndHandleStyle = computed(() => {
+  if (stretchAxis.value === 'vertical') {
+    return {
+      left: `${stretchBandEnd.value}%`,
+      top: '50%',
+      transform: 'translate(-50%, -50%)',
+    }
+  }
+
+  return {
+    top: `${stretchBandEnd.value}%`,
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+  }
+})
+
+const liquifyCursorStyle = computed(() => {
+  const size = `${liquifyBrushSize.value}%`
+  return {
+    width: size,
+    height: size,
+    left: `${liquifyCursor.x}%`,
+    top: `${liquifyCursor.y}%`,
+  }
+})
+
 function onStartCrop(event: PointerEvent, mode: CropDragMode) {
+  if (geometryTool.value !== 'crop') return
   emit('startCrop', event, mode)
+}
+
+function clampPercent(value: number, min = 0, max = 100) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function normalizePointInElement(event: PointerEvent, target: HTMLElement) {
+  const rect = target.getBoundingClientRect()
+  const normalizedX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * 100 : 0
+  const normalizedY = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * 100 : 0
+  return {
+    x: clampPercent(normalizedX),
+    y: clampPercent(normalizedY),
+    width: rect.width,
+    height: rect.height,
+  }
+}
+
+function clampStretchBand() {
+  const minBand = 8
+  stretchBandStart.value = clampPercent(stretchBandStart.value)
+  stretchBandEnd.value = clampPercent(stretchBandEnd.value)
+  if (stretchBandEnd.value < stretchBandStart.value) {
+    const tmp = stretchBandStart.value
+    stretchBandStart.value = stretchBandEnd.value
+    stretchBandEnd.value = tmp
+  }
+  if (stretchBandEnd.value - stretchBandStart.value < minBand) {
+    const center = (stretchBandStart.value + stretchBandEnd.value) / 2
+    stretchBandStart.value = clampPercent(center - minBand / 2)
+    stretchBandEnd.value = clampPercent(stretchBandStart.value + minBand)
+    if (stretchBandEnd.value - stretchBandStart.value < minBand) {
+      stretchBandStart.value = clampPercent(stretchBandEnd.value - minBand)
+    }
+  }
+}
+
+function clearLiquify() {
+  liquifyStrokes.value = []
+  liquifyChangeTick.value += 1
+}
+
+function resetStretch() {
+  stretchBandStart.value = 34
+  stretchBandEnd.value = 66
+  stretchAmount.value = 0
+}
+
+function resetLocalGeometryDeform() {
+  clearLiquify()
+  resetStretch()
+  geometryTool.value = 'crop'
+}
+
+function onResetAll() {
+  resetLocalGeometryDeform()
+  emit('reset')
+}
+
+function onResetGroup(group: 'tone' | 'detail' | 'color' | 'geometry') {
+  if (group === 'geometry') {
+    resetLocalGeometryDeform()
+  }
+  emit('resetGroup', group)
+}
+
+function onStagePointerDown(event: PointerEvent) {
+  onPreviewPointerDown(event)
+
+  if (geometryTool.value === 'crop') return
+  const target = event.currentTarget as HTMLElement | null
+  if (!target) return
+
+  const point = normalizePointInElement(event, target)
+
+  if (geometryTool.value === 'liquify') {
+    stageDrag.active = true
+    stageDrag.mode = 'liquify'
+    stageDrag.lastNormX = point.x
+    stageDrag.lastNormY = point.y
+    liquifyCursor.visible = true
+    liquifyCursor.x = point.x
+    liquifyCursor.y = point.y
+  } else {
+    const axisValue = stretchAxis.value === 'vertical' ? point.x : point.y
+    const threshold = 2.8
+    const inBand = axisValue > stretchBandStart.value && axisValue < stretchBandEnd.value
+
+    if (Math.abs(axisValue - stretchBandStart.value) <= threshold) {
+      stageDrag.mode = 'stretch-start'
+    } else if (Math.abs(axisValue - stretchBandEnd.value) <= threshold) {
+      stageDrag.mode = 'stretch-end'
+    } else if (inBand) {
+      stageDrag.mode = 'stretch-band'
+    } else {
+      stageDrag.mode = 'none'
+      return
+    }
+
+    stageDrag.active = true
+    stageDrag.startNormX = point.x
+    stageDrag.startNormY = point.y
+    stageDrag.originBandStart = stretchBandStart.value
+    stageDrag.originBandEnd = stretchBandEnd.value
+  }
+
+  stageDrag.startX = event.clientX
+  stageDrag.startY = event.clientY
+
+  if (typeof target.setPointerCapture === 'function') {
+    try {
+      target.setPointerCapture(event.pointerId)
+    } catch {
+      // Ignore when capture is unavailable for this pointer.
+    }
+  }
+
+  event.preventDefault()
+}
+
+function appendLiquifyStroke(fromX: number, fromY: number, toX: number, toY: number) {
+  const distance = Math.hypot(toX - fromX, toY - fromY)
+  if (distance < 0.16) return
+
+  const stroke: LiquifyStroke = {
+    fromX: fromX / 100,
+    fromY: fromY / 100,
+    toX: toX / 100,
+    toY: toY / 100,
+    radius: liquifyBrushSize.value / 100,
+    strength: Math.max(0.04, liquifyIntensity.value / 100),
+  }
+
+  liquifyStrokes.value.push(stroke)
+  if (liquifyStrokes.value.length > 120) {
+    liquifyStrokes.value.shift()
+  }
+  liquifyChangeTick.value += 1
+}
+
+function onStagePointerMove(event: PointerEvent) {
+  const target = event.currentTarget as HTMLElement | null
+  if (!target) return
+
+  if (geometryTool.value === 'crop') {
+    emit('cropMove', event)
+    return
+  }
+
+  const point = normalizePointInElement(event, target)
+
+  if (geometryTool.value === 'liquify') {
+    liquifyCursor.visible = true
+    liquifyCursor.x = point.x
+    liquifyCursor.y = point.y
+
+    if (stageDrag.active && stageDrag.mode === 'liquify') {
+      appendLiquifyStroke(stageDrag.lastNormX, stageDrag.lastNormY, point.x, point.y)
+      stageDrag.lastNormX = point.x
+      stageDrag.lastNormY = point.y
+    }
+    return
+  }
+
+  if (!stageDrag.active || stageDrag.mode === 'none') return
+
+  const axisPoint = stretchAxis.value === 'vertical' ? point.x : point.y
+  const axisStart = stretchAxis.value === 'vertical' ? stageDrag.startNormX : stageDrag.startNormY
+  const delta = axisPoint - axisStart
+  const minBand = 8
+
+  if (stageDrag.mode === 'stretch-start') {
+    stretchBandStart.value = clampPercent(stageDrag.originBandStart + delta, 0, stretchBandEnd.value - minBand)
+    return
+  }
+
+  if (stageDrag.mode === 'stretch-end') {
+    stretchBandEnd.value = clampPercent(stageDrag.originBandEnd + delta, stretchBandStart.value + minBand, 100)
+    return
+  }
+
+  const width = stageDrag.originBandEnd - stageDrag.originBandStart
+  let nextStart = stageDrag.originBandStart + delta
+  let nextEnd = nextStart + width
+  if (nextStart < 0) {
+    nextEnd -= nextStart
+    nextStart = 0
+  }
+  if (nextEnd > 100) {
+    const overflow = nextEnd - 100
+    nextStart -= overflow
+    nextEnd = 100
+  }
+  stretchBandStart.value = clampPercent(nextStart)
+  stretchBandEnd.value = clampPercent(nextEnd)
+}
+
+function onStagePointerUpOrCancel() {
+  emit('stopCrop')
+  onPreviewPointerUpOrCancel()
+
+  stageDrag.active = false
+  stageDrag.mode = 'none'
+  if (geometryTool.value === 'liquify') {
+    liquifyCursor.visible = false
+  }
+}
+
+function onStagePointerLeave() {
+  emit('stopCrop')
+  onPreviewPointerUpOrCancel()
+  stageDrag.active = false
+  stageDrag.mode = 'none'
+  liquifyCursor.visible = false
 }
 
 const processedPreviewSrc = ref('')
@@ -166,6 +482,164 @@ function hasJsAdjustments(editor: EditorState) {
     editor.grayscale !== 0 ||
     editor.sepia !== 0
   )
+}
+
+function hasLocalGeometryAdjustments() {
+  return liquifyStrokes.value.length > 0 || Math.abs(stretchAmount.value) > 0.01
+}
+
+function clampPixel(value: number, max: number) {
+  return value < 0 ? 0 : value > max ? max : value
+}
+
+function sampleBilinear(source: Uint8ClampedArray, width: number, height: number, x: number, y: number) {
+  const x0 = clampPixel(Math.floor(x), width - 1)
+  const y0 = clampPixel(Math.floor(y), height - 1)
+  const x1 = clampPixel(x0 + 1, width - 1)
+  const y1 = clampPixel(y0 + 1, height - 1)
+
+  const tx = Math.max(0, Math.min(1, x - x0))
+  const ty = Math.max(0, Math.min(1, y - y0))
+
+  const i00 = (y0 * width + x0) * 4
+  const i10 = (y0 * width + x1) * 4
+  const i01 = (y1 * width + x0) * 4
+  const i11 = (y1 * width + x1) * 4
+
+  const out = [0, 0, 0, 0]
+  for (let channel = 0; channel < 4; channel += 1) {
+    const top = (source[i00 + channel] || 0) * (1 - tx) + (source[i10 + channel] || 0) * tx
+    const bottom = (source[i01 + channel] || 0) * (1 - tx) + (source[i11 + channel] || 0) * tx
+    out[channel] = top * (1 - ty) + bottom * ty
+  }
+  return out
+}
+
+function applyLiquifyWarp(data: ImageData) {
+  if (liquifyStrokes.value.length === 0) return
+
+  const width = data.width
+  const height = data.height
+  const minSide = Math.max(1, Math.min(width, height))
+  const target = data.data
+
+  for (const stroke of liquifyStrokes.value) {
+    const radiusPx = Math.max(1, stroke.radius * minSide)
+    const fromX = stroke.fromX * width
+    const fromY = stroke.fromY * height
+    const dx = (stroke.toX - stroke.fromX) * width * stroke.strength
+    const dy = (stroke.toY - stroke.fromY) * height * stroke.strength
+
+    if (Math.abs(dx) < 0.05 && Math.abs(dy) < 0.05) continue
+
+    const padding = radiusPx + Math.max(Math.abs(dx), Math.abs(dy))
+    const x0 = Math.max(0, Math.floor(fromX - padding))
+    const y0 = Math.max(0, Math.floor(fromY - padding))
+    const x1 = Math.min(width - 1, Math.ceil(fromX + padding))
+    const y1 = Math.min(height - 1, Math.ceil(fromY + padding))
+
+    const sourceSnapshot = new Uint8ClampedArray(target)
+
+    for (let y = y0; y <= y1; y += 1) {
+      for (let x = x0; x <= x1; x += 1) {
+        const vx = x - fromX
+        const vy = y - fromY
+        const dist = Math.sqrt(vx * vx + vy * vy)
+        if (dist > radiusPx) continue
+
+        const t = 1 - dist / radiusPx
+        const falloff = t * t
+
+        const srcX = clampPixel(x - dx * falloff, width - 1)
+        const srcY = clampPixel(y - dy * falloff, height - 1)
+        const sample = sampleBilinear(sourceSnapshot, width, height, srcX, srcY)
+        const index = (y * width + x) * 4
+        target[index] = clampChannel(Math.round(sample[0] || 0))
+        target[index + 1] = clampChannel(Math.round(sample[1] || 0))
+        target[index + 2] = clampChannel(Math.round(sample[2] || 0))
+        target[index + 3] = clampChannel(Math.round(sample[3] || 255))
+      }
+    }
+  }
+}
+
+function mapStretchCoordinate(
+  outputCoord: number,
+  outputStart: number,
+  outputEnd: number,
+  inputStart: number,
+  inputEnd: number,
+  length: number,
+) {
+  const safeLength = Math.max(1, length)
+  const startOut = Math.max(0, Math.min(safeLength, outputStart))
+  const endOut = Math.max(startOut + 1e-4, Math.min(safeLength, outputEnd))
+  const startIn = Math.max(0, Math.min(safeLength, inputStart))
+  const endIn = Math.max(startIn + 1e-4, Math.min(safeLength, inputEnd))
+
+  if (outputCoord <= startOut) {
+    const denom = Math.max(1e-4, startOut)
+    return (outputCoord / denom) * startIn
+  }
+
+  if (outputCoord >= endOut) {
+    const denom = Math.max(1e-4, safeLength - endOut)
+    return endIn + ((outputCoord - endOut) / denom) * (safeLength - endIn)
+  }
+
+  const denom = Math.max(1e-4, endOut - startOut)
+  return startIn + ((outputCoord - startOut) / denom) * (endIn - startIn)
+}
+
+function applyStretchWarp(data: ImageData) {
+  if (Math.abs(stretchAmount.value) <= 0.01) return
+
+  clampStretchBand()
+
+  const width = data.width
+  const height = data.height
+  const source = new Uint8ClampedArray(data.data)
+  const target = data.data
+  const axisLength = stretchAxis.value === 'vertical' ? width : height
+
+  const inputStart = (stretchBandStart.value / 100) * axisLength
+  const inputEnd = (stretchBandEnd.value / 100) * axisLength
+  const baseBandSize = Math.max(1, inputEnd - inputStart)
+  const scale = Math.max(0.25, Math.min(2.6, 1 + stretchAmount.value / 100))
+  const outputBandSize = Math.max(1, Math.min(axisLength - 2, baseBandSize * scale))
+  const center = (inputStart + inputEnd) / 2
+
+  let outputStart = center - outputBandSize / 2
+  let outputEnd = center + outputBandSize / 2
+  if (outputStart < 0) {
+    outputEnd -= outputStart
+    outputStart = 0
+  }
+  if (outputEnd > axisLength) {
+    const overflow = outputEnd - axisLength
+    outputStart -= overflow
+    outputEnd = axisLength
+  }
+  outputStart = Math.max(0, outputStart)
+  outputEnd = Math.min(axisLength, outputEnd)
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const srcX = stretchAxis.value === 'vertical'
+        ? mapStretchCoordinate(x, outputStart, outputEnd, inputStart, inputEnd, width)
+        : x
+      const srcY = stretchAxis.value === 'horizontal'
+        ? mapStretchCoordinate(y, outputStart, outputEnd, inputStart, inputEnd, height)
+        : y
+
+      const sample = sampleBilinear(source, width, height, srcX, srcY)
+      const idx = (y * width + x) * 4
+      target[idx] = clampChannel(Math.round(sample[0] || 0))
+      target[idx + 1] = clampChannel(Math.round(sample[1] || 0))
+      target[idx + 2] = clampChannel(Math.round(sample[2] || 0))
+      target[idx + 3] = clampChannel(Math.round(sample[3] || 255))
+    }
+  }
 }
 
 function averageBlur(source: Uint8ClampedArray, width: number, height: number) {
@@ -330,7 +804,8 @@ function loadImage(src: string) {
 
 async function renderJsPreview() {
   const runId = ++previewRenderRunId
-  if (!props.thumbSrc || !props.canPreview || props.beforeAfterActive || !hasJsAdjustments(props.editor)) {
+  const needsProcessing = hasJsAdjustments(props.editor) || hasLocalGeometryAdjustments()
+  if (!props.thumbSrc || !props.canPreview || props.beforeAfterActive || !needsProcessing) {
     processedPreviewSrc.value = ''
     return
   }
@@ -356,6 +831,8 @@ async function renderJsPreview() {
     context.drawImage(image, 0, 0, width, height)
     const data = context.getImageData(0, 0, width, height)
     applyJsAdjustments(data, props.editor)
+    applyLiquifyWarp(data)
+    applyStretchWarp(data)
     context.putImageData(data, 0, 0)
 
     if (runId !== previewRenderRunId) return
@@ -393,11 +870,52 @@ watch(
     props.editor.glamour,
     props.editor.grayscale,
     props.editor.sepia,
+    liquifyChangeTick.value,
+    stretchAxis.value,
+    stretchBandStart.value,
+    stretchBandEnd.value,
+    stretchAmount.value,
   ],
   () => {
     scheduleJsPreviewRender()
   },
   { immediate: true },
+)
+
+watch(
+  () => props.activeMedia?.id || null,
+  () => {
+    resetLocalGeometryDeform()
+    scheduleJsPreviewRender()
+  },
+)
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (!isOpen) {
+      stageDrag.active = false
+      stageDrag.mode = 'none'
+      liquifyCursor.visible = false
+    }
+  },
+)
+
+watch(
+  () => activeTabModel.value,
+  (tab) => {
+    if (tab === 'liquify') {
+      geometryTool.value = 'liquify'
+      return
+    }
+    if (tab === 'stretch') {
+      geometryTool.value = 'stretch'
+      return
+    }
+    if (geometryTool.value !== 'crop') {
+      geometryTool.value = 'crop'
+    }
+  },
 )
 
 function updateEditorNumberField(key: keyof EditorState, event: Event) {
@@ -487,14 +1005,11 @@ onBeforeUnmount(() => {
           <div
             v-if="thumbSrc && canPreview"
             class="editor-crop-stage"
-            @pointerdown="onPreviewPointerDown"
-            @pointermove="emit('cropMove', $event)"
-            @pointerup="emit('stopCrop')"
-            @pointercancel="emit('stopCrop')"
-            @pointerleave="emit('stopCrop')"
-            @pointerup.capture="onPreviewPointerUpOrCancel"
-            @pointercancel.capture="onPreviewPointerUpOrCancel"
-            @pointerleave.capture="onPreviewPointerUpOrCancel"
+            @pointerdown="onStagePointerDown"
+            @pointermove="onStagePointerMove"
+            @pointerup="onStagePointerUpOrCancel"
+            @pointercancel="onStagePointerUpOrCancel"
+            @pointerleave="onStagePointerLeave"
           >
             <div class="editor-image-frame" :style="editorPreviewFrameStyle">
               <img
@@ -504,6 +1019,22 @@ onBeforeUnmount(() => {
                 :style="editorFilterStyle"
               />
               <div
+                v-if="geometryTool === 'stretch'"
+                class="editor-stretch-overlay"
+                :class="{ vertical: stretchAxis === 'vertical', horizontal: stretchAxis === 'horizontal' }"
+              >
+                <div class="editor-stretch-band" :style="stretchOverlayStyle"></div>
+                <span class="editor-stretch-line start" :style="stretchStartHandleStyle"></span>
+                <span class="editor-stretch-line end" :style="stretchEndHandleStyle"></span>
+                <button class="editor-stretch-handle start" type="button" :style="stretchStartHandleStyle">‹›</button>
+                <button class="editor-stretch-handle end" type="button" :style="stretchEndHandleStyle">‹›</button>
+              </div>
+              <div
+                v-if="geometryTool === 'liquify' && liquifyCursor.visible"
+                class="editor-liquify-cursor"
+                :style="liquifyCursorStyle"
+              ></div>
+              <div
                 v-if="clippingOverlayEnabled"
                 class="editor-clipping-overlay"
                 :style="{
@@ -511,7 +1042,7 @@ onBeforeUnmount(() => {
                   '--shadow-opacity': String(Math.min(0.7, clippingStats.shadows / 32)),
                 }"
               ></div>
-              <div class="crop-rect" :style="editorCropRectStyle" @pointerdown="onStartCrop($event, 'move')">
+              <div v-if="geometryTool === 'crop'" class="crop-rect" :style="editorCropRectStyle" @pointerdown="onStartCrop($event, 'move')">
                 <span class="crop-grid v1"></span>
                 <span class="crop-grid v2"></span>
                 <span class="crop-grid h1"></span>
@@ -589,6 +1120,66 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-else class="editor-controls editor-controls-pro">
+              <template v-if="desktopSection === 'geometry'">
+                <div class="editor-tool-box">
+                  <span class="editor-toolbar-label">Geometry tool</span>
+                  <div class="editor-chip-row">
+                    <button class="chip" type="button" :class="{ active: geometryTool === 'crop' }" @click="geometryTool = 'crop'">
+                      Crop
+                    </button>
+                    <button class="chip" type="button" :class="{ active: geometryTool === 'liquify' }" @click="geometryTool = 'liquify'">
+                      Liquify
+                    </button>
+                    <button class="chip" type="button" :class="{ active: geometryTool === 'stretch' }" @click="geometryTool = 'stretch'">
+                      Stretch
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="geometryTool === 'liquify'" class="editor-tool-box">
+                  <span class="editor-toolbar-label">Liquify brush</span>
+                  <div class="slider-row slider-row-pro">
+                    <span class="slider-row-title">Brush size</span>
+                    <div class="slider-row-main">
+                      <input v-model="liquifyBrushSize" type="range" min="8" max="55" />
+                      <span class="slider-value-pill">{{ liquifyBrushSize }}%</span>
+                    </div>
+                  </div>
+                  <div class="slider-row slider-row-pro">
+                    <span class="slider-row-title">Intensity</span>
+                    <div class="slider-row-main">
+                      <input v-model="liquifyIntensity" type="range" min="5" max="100" />
+                      <span class="slider-value-pill">{{ liquifyIntensity }}%</span>
+                    </div>
+                  </div>
+                  <div class="editor-chip-row">
+                    <button class="chip" type="button" @click="clearLiquify">Clear liquify</button>
+                  </div>
+                </div>
+
+                <div v-if="geometryTool === 'stretch'" class="editor-tool-box">
+                  <span class="editor-toolbar-label">Stretch zone</span>
+                  <div class="editor-chip-row">
+                    <button class="chip" type="button" :class="{ active: stretchAxis === 'vertical' }" @click="stretchAxis = 'vertical'">
+                      Vertical
+                    </button>
+                    <button class="chip" type="button" :class="{ active: stretchAxis === 'horizontal' }" @click="stretchAxis = 'horizontal'">
+                      Horizontal
+                    </button>
+                  </div>
+                  <div class="slider-row slider-row-pro">
+                    <span class="slider-row-title">Amount</span>
+                    <div class="slider-row-main">
+                      <input v-model="stretchAmount" type="range" min="-85" max="85" />
+                      <span class="slider-value-pill">{{ stretchAmount }}%</span>
+                    </div>
+                  </div>
+                  <div class="editor-chip-row">
+                    <button class="chip" type="button" @click="resetStretch">Reset stretch</button>
+                  </div>
+                </div>
+              </template>
+
               <div v-for="control in activeSectionSliders" :key="`control-${control.key}`" class="slider-row slider-row-pro">
                 <span class="slider-row-title">{{ control.label }}</span>
                 <div class="slider-row-main">
@@ -632,16 +1223,16 @@ onBeforeUnmount(() => {
           <div class="editor-presets">
             <span class="editor-toolbar-label">Reset groups</span>
             <div class="editor-chip-row">
-              <button class="chip" type="button" @click="emit('resetGroup', 'tone')">Tone</button>
-              <button class="chip" type="button" @click="emit('resetGroup', 'detail')">Detail</button>
-              <button class="chip" type="button" @click="emit('resetGroup', 'color')">Color</button>
-              <button class="chip" type="button" @click="emit('resetGroup', 'geometry')">Geometry</button>
+              <button class="chip" type="button" @click="onResetGroup('tone')">Tone</button>
+              <button class="chip" type="button" @click="onResetGroup('detail')">Detail</button>
+              <button class="chip" type="button" @click="onResetGroup('color')">Color</button>
+              <button class="chip" type="button" @click="onResetGroup('geometry')">Geometry</button>
             </div>
           </div>
         </div>
 
         <div class="editor-actions">
-          <button class="btn ghost" @click="emit('reset')">Reset</button>
+          <button class="btn ghost" @click="onResetAll">Reset</button>
           <button class="btn ghost" @click="emit('close')">Cancel</button>
           <button class="btn ghost" :disabled="saving || undoCount === 0" @click="emit('undo')">
             Undo apply ({{ undoCount }})
@@ -674,6 +1265,33 @@ onBeforeUnmount(() => {
 
       <div class="editor-mobile-control">
         <div v-if="activeTabModel === 'previewScale'" class="slider-row"><span>Preview scale</span><input v-model="previewScaleModel" type="range" min="25" max="300" /></div>
+        <template v-else-if="activeTabModel === 'liquify'">
+          <div class="editor-tool-box compact">
+            <div class="editor-chip-row">
+              <button class="chip" type="button" :class="{ active: geometryTool === 'liquify' }" @click="geometryTool = 'liquify'">
+                Enable brush
+              </button>
+              <button class="chip" type="button" @click="clearLiquify">Clear</button>
+            </div>
+            <div class="slider-row"><span>Brush size</span><input v-model="liquifyBrushSize" type="range" min="8" max="55" /></div>
+            <div class="slider-row"><span>Intensity</span><input v-model="liquifyIntensity" type="range" min="5" max="100" /></div>
+          </div>
+        </template>
+        <template v-else-if="activeTabModel === 'stretch'">
+          <div class="editor-tool-box compact">
+            <div class="editor-chip-row">
+              <button class="chip" type="button" :class="{ active: geometryTool === 'stretch' }" @click="geometryTool = 'stretch'">
+                Enable stretch
+              </button>
+              <button class="chip" type="button" @click="resetStretch">Reset</button>
+            </div>
+            <div class="editor-chip-row">
+              <button class="chip" type="button" :class="{ active: stretchAxis === 'vertical' }" @click="stretchAxis = 'vertical'">Vertical</button>
+              <button class="chip" type="button" :class="{ active: stretchAxis === 'horizontal' }" @click="stretchAxis = 'horizontal'">Horizontal</button>
+            </div>
+            <div class="slider-row"><span>Amount</span><input v-model="stretchAmount" type="range" min="-85" max="85" /></div>
+          </div>
+        </template>
         <div v-else-if="activeTabModel === 'temperature'" class="slider-row"><span>Temperature</span><input :value="editor.temperature" type="range" min="-100" max="100" @input="updateEditorNumberField('temperature', $event)" /></div>
         <div v-else-if="activeTabModel === 'brightness'" class="slider-row"><span>Brightness</span><input :value="editor.brightness" type="range" min="-60" max="60" @input="updateEditorNumberField('brightness', $event)" /></div>
         <div v-else-if="activeTabModel === 'contrast'" class="slider-row"><span>Contrast</span><input :value="editor.contrast" type="range" min="-60" max="60" @input="updateEditorNumberField('contrast', $event)" /></div>
@@ -717,7 +1335,7 @@ onBeforeUnmount(() => {
         <button class="btn ghost" aria-label="Before after" title="Before/After" @touchstart.prevent="emit('setBeforeAfterActive', true)" @touchend.prevent="emit('setBeforeAfterActive', false)">
           <i class="ri-contrast-line" aria-hidden="true"></i>
         </button>
-        <button class="btn ghost" aria-label="Reset adjustments" title="Reset" @click="emit('reset')">
+        <button class="btn ghost" aria-label="Reset adjustments" title="Reset" @click="onResetAll">
           <i class="ri-refresh-line" aria-hidden="true"></i>
         </button>
         <button class="btn ghost" aria-label="Cancel editing" title="Cancel" @click="emit('close')">
