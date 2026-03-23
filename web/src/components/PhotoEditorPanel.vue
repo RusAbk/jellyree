@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import type { MediaItem } from '../api'
 import type { CropDragMode, EditorMobileTab, EditorState } from '../composables/useEditorState'
+import { applyWebglPreviewAdjustments } from '../lib/editorWebglPreview'
 
 type QuickRecipeKey =
   | 'peachy-clean'
@@ -331,7 +332,7 @@ function pointerOnPreviewImage(event: PointerEvent) {
 
   const localStageX = event.clientX - stageRect.left
   const localStageY = event.clientY - stageRect.top
-  const brushRadiusPx = Math.max(6, (Math.min(imageRect.width, imageRect.height) * liquifyBrushSize.value) / 100 / 2)
+  const brushRadiusPx = Math.max(6, (Math.min(imageRect.width, imageRect.height) * liquifyBrushSize.value) / 100)
 
   return {
     x: normalizedX,
@@ -609,6 +610,62 @@ function onStagePointerLeave() {
 const processedPreviewSrc = ref('')
 let previewRenderTimer: ReturnType<typeof setTimeout> | null = null
 let previewRenderRunId = 0
+let geometryWorkerRequestId = 0
+let geometryWorker: Worker | null = null
+const geometryWorkerPending = new Map<number, {
+  resolve: (value: ImageData) => void
+  reject: (reason?: unknown) => void
+}>()
+
+function getGeometryWorker() {
+  if (geometryWorker) return geometryWorker
+
+  geometryWorker = new Worker(new URL('../workers/editorGeometry.worker.ts', import.meta.url), {
+    type: 'module',
+  })
+
+  geometryWorker.onmessage = (event: MessageEvent<{ id: number; imageData: ImageData }>) => {
+    const payload = event.data
+    const pending = geometryWorkerPending.get(payload.id)
+    if (!pending) return
+    geometryWorkerPending.delete(payload.id)
+    pending.resolve(payload.imageData)
+  }
+
+  geometryWorker.onerror = (error) => {
+    const pendingEntries = Array.from(geometryWorkerPending.values())
+    geometryWorkerPending.clear()
+    for (const pending of pendingEntries) {
+      pending.reject(error)
+    }
+  }
+
+  return geometryWorker
+}
+
+function runGeometryWorker(imageData: ImageData) {
+  const worker = getGeometryWorker()
+  const requestId = ++geometryWorkerRequestId
+  return new Promise<ImageData>((resolve, reject) => {
+    geometryWorkerPending.set(requestId, { resolve, reject })
+    worker.postMessage(
+      {
+        id: requestId,
+        imageData,
+        liquifyStrokes: liquifyStrokes.value,
+        stretch: Math.abs(stretchAmount.value) > 0.01
+          ? {
+            axis: stretchAxis.value,
+            start: stretchBandStart.value,
+            end: stretchBandEnd.value,
+            amount: stretchAmount.value,
+          }
+          : null,
+      },
+      [imageData.data.buffer],
+    )
+  })
+}
 
 function clampChannel(value: number) {
   return value < 0 ? 0 : value > 255 ? 255 : value
@@ -978,10 +1035,42 @@ async function renderJsPreview() {
     }
 
     context.drawImage(image, 0, 0, width, height)
-    let data = context.getImageData(0, 0, width, height)
-    applyJsAdjustments(data, props.editor)
-    applyLiquifyWarp(data)
-    data = applyStretchWarp(data)
+    let data: ImageData | null = null
+
+    if (hasJsAdjustments(props.editor)) {
+      data = applyWebglPreviewAdjustments(image, width, height, {
+        temperature: props.editor.temperature,
+        brightness: props.editor.brightness,
+        contrast: props.editor.contrast,
+        saturation: props.editor.saturation,
+        toneDepth: props.editor.toneDepth,
+        shadowsLevel: props.editor.shadowsLevel,
+        highlightsLevel: props.editor.highlightsLevel,
+        sharpness: props.editor.sharpness,
+        definition: props.editor.definition,
+        vignette: props.editor.vignette,
+        glamour: props.editor.glamour,
+        grayscale: props.editor.grayscale,
+        sepia: props.editor.sepia,
+      })
+    }
+
+    if (!data) {
+      data = context.getImageData(0, 0, width, height)
+      applyJsAdjustments(data, props.editor)
+    }
+
+    if (hasLocalGeometryAdjustments()) {
+      try {
+        data = await runGeometryWorker(data)
+      } catch {
+        applyLiquifyWarp(data)
+        data = applyStretchWarp(data)
+      }
+    }
+
+    if (runId !== previewRenderRunId) return
+
     if (canvas.width !== data.width || canvas.height !== data.height) {
       canvas.width = data.width
       canvas.height = data.height
@@ -1146,6 +1235,13 @@ onBeforeUnmount(() => {
     clearTimeout(previewRenderTimer)
     previewRenderTimer = null
   }
+
+  if (geometryWorker) {
+    geometryWorker.terminate()
+    geometryWorker = null
+  }
+  geometryWorkerPending.clear()
+
   previewRenderRunId += 1
 })
 </script>
