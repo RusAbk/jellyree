@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { api, type AccountStats, type AdminUserOverview, type Album, type MediaItem, type MeProfile, type Tag } from './api'
 import AlbumTreeSelect from './components/AlbumTreeSelect.vue'
 import PhotoEditorPanel from './components/PhotoEditorPanel.vue'
-import { useEditorActions } from './composables/useEditorActions'
+import { type EditorDeformationPayload, useEditorActions } from './composables/useEditorActions'
 import { useEditorPreview } from './composables/useEditorPreview'
 import { useEditorState } from './composables/useEditorState'
 
@@ -625,9 +625,14 @@ const {
   clearThumb,
   clearLightboxFullImage,
   loadThumb,
-  applyEditsRequest: (authToken, mediaId, adjustments) => api.applyMediaEdits(authToken, mediaId, adjustments),
+  showToast,
+  applyEditsRequest: (authToken, mediaId, payload) => api.applyMediaEdits(authToken, mediaId, payload),
   revertEditsRequest: (authToken, mediaId) => api.revertMediaEdits(authToken, mediaId),
 })
+
+function onEditorApply(payload?: EditorDeformationPayload) {
+  void applyImageEditsPermanently(payload)
+}
 
 const mediaDensitySteps: Array<'s' | 'm' | 'l'> = ['s', 'm', 'l']
 const virtualWindowState = reactive({
@@ -6232,7 +6237,7 @@ onBeforeUnmount(() => {
         @reset="resetEditorAll"
         @reset-group="resetEditorGroup"
         @undo="undoLastPermanentEdit"
-        @apply="applyImageEditsPermanently"
+        @apply="onEditorApply"
         @apply-preset="applyEditorPreset"
         @apply-quick-recipe="applyQuickRecipe"
         @apply-smart-auto-enhance="applySmartAutoEnhance"

@@ -2,6 +2,25 @@ import type { Ref } from 'vue'
 import type { EditorMobileTab, EditorState } from './useEditorState'
 import { adjustmentsToRequestPayload, normalizeEditorAdjustments } from '../editor-adjustments'
 
+export type EditorLiquifyStroke = {
+  fromX: number
+  fromY: number
+  toX: number
+  toY: number
+  radius: number
+  strength: number
+}
+
+export type EditorDeformationPayload = {
+  liquifyStrokes?: EditorLiquifyStroke[]
+  stretch?: {
+    axis: 'vertical' | 'horizontal'
+    start: number
+    end: number
+    amount: number
+  }
+}
+
 type UseEditorActionsParams = {
   token: Ref<string>
   activeMedia: Ref<{ id: string } | null>
@@ -18,7 +37,12 @@ type UseEditorActionsParams = {
   clearThumb: (mediaId: string) => void
   clearLightboxFullImage: (mediaId: string) => void
   loadThumb: (mediaId: string) => Promise<void>
-  applyEditsRequest: (token: string, mediaId: string, adjustments: Record<string, number>) => Promise<unknown>
+  showToast: (text: string) => void
+  applyEditsRequest: (
+    token: string,
+    mediaId: string,
+    payload: { adjustments: Record<string, number>; deformation?: EditorDeformationPayload },
+  ) => Promise<unknown>
   revertEditsRequest: (token: string, mediaId: string) => Promise<unknown>
 }
 
@@ -39,6 +63,7 @@ export function useEditorActions(params: UseEditorActionsParams) {
     clearThumb,
     clearLightboxFullImage,
     loadThumb,
+    showToast,
     applyEditsRequest,
     revertEditsRequest,
   } = params
@@ -59,7 +84,7 @@ export function useEditorActions(params: UseEditorActionsParams) {
     closeContextMenus()
   }
 
-  async function applyImageEditsPermanently() {
+  async function applyImageEditsPermanently(deformation?: EditorDeformationPayload) {
     if (!activeMedia.value || !token.value) return
     saving.value = true
 
@@ -88,14 +113,19 @@ export function useEditorActions(params: UseEditorActionsParams) {
         cropWidth: editor.cropWidth,
         cropHeight: editor.cropHeight,
       })
-      await applyEditsRequest(token.value, mediaId, adjustmentsToRequestPayload(normalized))
+      await applyEditsRequest(token.value, mediaId, {
+        adjustments: adjustmentsToRequestPayload(normalized),
+        deformation,
+      })
       await loadAll()
       clearThumb(mediaId)
       clearLightboxFullImage(mediaId)
       await loadThumb(mediaId)
       message.value = 'Edits permanently applied'
+      showToast('Edits permanently applied')
     } catch (error) {
       message.value = (error as Error).message
+      showToast(`Failed to apply edits: ${(error as Error).message}`)
     } finally {
       saving.value = false
     }
@@ -113,9 +143,11 @@ export function useEditorActions(params: UseEditorActionsParams) {
       clearLightboxFullImage(mediaId)
       await loadThumb(mediaId)
       message.value = 'Last permanent edit was undone'
+      showToast('Last permanent edit was undone')
       closeEditMode()
     } catch (error) {
       message.value = (error as Error).message
+      showToast(`Failed to undo edits: ${(error as Error).message}`)
     } finally {
       saving.value = false
     }

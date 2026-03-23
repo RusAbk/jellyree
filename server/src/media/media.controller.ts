@@ -5,6 +5,7 @@ import {
   Delete,
   Get,
   Header,
+  NotFoundException,
   Param,
   Patch,
   Post,
@@ -147,6 +148,83 @@ type UploadMetadata = {
   longitude: number | null;
 };
 
+type LiquifyStrokePayload = {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  radius: number;
+  strength: number;
+};
+
+type StretchPayload = {
+  axis: 'vertical' | 'horizontal';
+  start: number;
+  end: number;
+  amount: number;
+};
+
+type EditorDeformationPayload = {
+  liquifyStrokes?: LiquifyStrokePayload[];
+  stretch?: StretchPayload;
+};
+
+type NormalizedEditorDeformation = {
+  liquifyStrokes: LiquifyStrokePayload[];
+  stretch: StretchPayload | null;
+};
+
+function normalizeEditorDeformation(
+  input: unknown,
+): NormalizedEditorDeformation | null {
+  if (!input || typeof input !== 'object') return null;
+
+  const source = input as Record<string, unknown>;
+  const rawStrokes = Array.isArray(source.liquifyStrokes) ? source.liquifyStrokes : [];
+
+  const liquifyStrokes: LiquifyStrokePayload[] = rawStrokes
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const row = item as Record<string, unknown>;
+      return {
+        fromX: clamp(toNumber(row.fromX, 0), 0, 1),
+        fromY: clamp(toNumber(row.fromY, 0), 0, 1),
+        toX: clamp(toNumber(row.toX, 0), 0, 1),
+        toY: clamp(toNumber(row.toY, 0), 0, 1),
+        radius: clamp(toNumber(row.radius, 0), 0.01, 0.55),
+        strength: clamp(toNumber(row.strength, 0), 0.01, 1.4),
+      };
+    })
+    .filter((value): value is LiquifyStrokePayload => Boolean(value))
+    .slice(0, 240);
+
+  let stretch: StretchPayload | null = null;
+  if (source.stretch && typeof source.stretch === 'object') {
+    const row = source.stretch as Record<string, unknown>;
+    const axis = row.axis === 'horizontal' ? 'horizontal' : 'vertical';
+    const start = clamp(toNumber(row.start, 0), 0, 100);
+    const end = clamp(toNumber(row.end, 100), 0, 100);
+    const amount = clamp(toNumber(row.amount, 0), -85, 85);
+    const safeStart = Math.min(start, end);
+    const safeEnd = Math.max(start, end);
+    stretch = {
+      axis,
+      start: safeStart,
+      end: Math.max(safeStart + 8, safeEnd),
+      amount,
+    };
+  }
+
+  if (liquifyStrokes.length === 0 && (!stretch || Math.abs(stretch.amount) < 0.01)) {
+    return null;
+  }
+
+  return {
+    liquifyStrokes,
+    stretch,
+  };
+}
+
 function ensureDir(path: string) {
   if (!existsSync(path)) {
     mkdirSync(path, { recursive: true });
@@ -196,6 +274,9 @@ export class MediaController {
 
   private objectKey(ownerId: string, relativePath: string) {
     const cleanedPath = relativePath.replace(/^\/+/, '');
+    if (cleanedPath.startsWith(`${ownerId}/`)) {
+      return cleanedPath;
+    }
     return `${ownerId}/${cleanedPath}`;
   }
 
@@ -259,12 +340,40 @@ export class MediaController {
 
   private async getObjectFromR2(ownerId: string, relativePath: string) {
     const client = this.getR2Client();
-    return client.send(
-      new GetObjectCommand({
-        Bucket: r2BucketName,
-        Key: this.objectKey(ownerId, relativePath),
-      }),
-    );
+    const key = this.objectKey(ownerId, relativePath);
+    const legacyKey = relativePath.replace(/^\/+/, '');
+    try {
+      return await client.send(
+        new GetObjectCommand({
+          Bucket: r2BucketName,
+          Key: key,
+        }),
+      );
+    } catch (error) {
+      const code = (error as { Code?: string; name?: string } | undefined)?.Code
+        || (error as { Code?: string; name?: string } | undefined)?.name;
+      if ((code === 'NoSuchKey' || code === 'NotFound') && legacyKey && legacyKey !== key) {
+        try {
+          return await client.send(
+            new GetObjectCommand({
+              Bucket: r2BucketName,
+              Key: legacyKey,
+            }),
+          );
+        } catch (legacyError) {
+          const legacyCode = (legacyError as { Code?: string; name?: string } | undefined)?.Code
+            || (legacyError as { Code?: string; name?: string } | undefined)?.name;
+          if (legacyCode === 'NoSuchKey' || legacyCode === 'NotFound') {
+            throw new NotFoundException(`Stored file not found in R2: ${relativePath}`);
+          }
+          throw legacyError;
+        }
+      }
+      if (code === 'NoSuchKey' || code === 'NotFound') {
+        throw new NotFoundException(`Stored file not found in R2: ${relativePath}`);
+      }
+      throw error;
+    }
   }
 
   private async getObjectBufferFromR2(ownerId: string, relativePath: string) {
@@ -482,10 +591,248 @@ export class MediaController {
     );
   }
 
+  private clampPixel(value: number, max: number) {
+    return value < 0 ? 0 : value > max ? max : value;
+  }
+
+  private sampleBilinear(
+    source: Uint8ClampedArray<ArrayBufferLike>,
+    width: number,
+    height: number,
+    channels: number,
+    x: number,
+    y: number,
+  ) {
+    const x0 = this.clampPixel(Math.floor(x), width - 1);
+    const y0 = this.clampPixel(Math.floor(y), height - 1);
+    const x1 = this.clampPixel(x0 + 1, width - 1);
+    const y1 = this.clampPixel(y0 + 1, height - 1);
+    const tx = clamp(x - x0, 0, 1);
+    const ty = clamp(y - y0, 0, 1);
+
+    const i00 = (y0 * width + x0) * channels;
+    const i10 = (y0 * width + x1) * channels;
+    const i01 = (y1 * width + x0) * channels;
+    const i11 = (y1 * width + x1) * channels;
+
+    const sample = new Array<number>(channels).fill(0);
+    for (let c = 0; c < channels; c += 1) {
+      const top = (source[i00 + c] ?? 0) * (1 - tx) + (source[i10 + c] ?? 0) * tx;
+      const bottom = (source[i01 + c] ?? 0) * (1 - tx) + (source[i11 + c] ?? 0) * tx;
+      sample[c] = top * (1 - ty) + bottom * ty;
+    }
+    return sample;
+  }
+
+  private applyLiquifyPixels(
+    source: Uint8ClampedArray<ArrayBufferLike>,
+    width: number,
+    height: number,
+    channels: number,
+    strokes: LiquifyStrokePayload[],
+  ): Uint8ClampedArray<ArrayBufferLike> {
+    if (strokes.length === 0) return source;
+
+    const minSide = Math.max(1, Math.min(width, height));
+    const displacementX = new Float32Array(width * height);
+    const displacementY = new Float32Array(width * height);
+
+    for (const stroke of strokes) {
+      const radiusPx = Math.max(1, stroke.radius * minSide);
+      const fromX = stroke.fromX * width;
+      const fromY = stroke.fromY * height;
+      const dx = (stroke.toX - stroke.fromX) * width * stroke.strength * 0.92;
+      const dy = (stroke.toY - stroke.fromY) * height * stroke.strength * 0.92;
+
+      if (Math.abs(dx) < 0.05 && Math.abs(dy) < 0.05) continue;
+
+      const x0 = Math.max(0, Math.floor(fromX - radiusPx));
+      const y0 = Math.max(0, Math.floor(fromY - radiusPx));
+      const x1 = Math.min(width - 1, Math.ceil(fromX + radiusPx));
+      const y1 = Math.min(height - 1, Math.ceil(fromY + radiusPx));
+
+      for (let y = y0; y <= y1; y += 1) {
+        for (let x = x0; x <= x1; x += 1) {
+          const vx = x - fromX;
+          const vy = y - fromY;
+          const dist = Math.sqrt(vx * vx + vy * vy);
+          if (dist > radiusPx) continue;
+
+          const t = 1 - dist / radiusPx;
+          const falloff = t * t * (2 - t);
+          const index = y * width + x;
+          displacementX[index] = (displacementX[index] ?? 0) + dx * falloff;
+          displacementY[index] = (displacementY[index] ?? 0) + dy * falloff;
+        }
+      }
+    }
+
+    const target = new Uint8ClampedArray(source.length);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const index = y * width + x;
+        const srcX = this.clampPixel(x - (displacementX[index] ?? 0), width - 1);
+        const srcY = this.clampPixel(y - (displacementY[index] ?? 0), height - 1);
+        const sample = this.sampleBilinear(source, width, height, channels, srcX, srcY);
+        const pixel = index * channels;
+        for (let c = 0; c < channels; c += 1) {
+          target[pixel + c] = clampInteger(sample[c] ?? 0, 0, 255);
+        }
+      }
+    }
+
+    return target;
+  }
+
+  private applyStretchPixels(
+    source: Uint8ClampedArray<ArrayBufferLike>,
+    width: number,
+    height: number,
+    channels: number,
+    stretch: StretchPayload,
+  ): { data: Uint8ClampedArray<ArrayBufferLike>; width: number; height: number } {
+    if (Math.abs(stretch.amount) <= 0.01) {
+      return { data: source, width, height };
+    }
+
+    const axisLength = stretch.axis === 'vertical' ? width : height;
+    const inputStart = clampInteger((stretch.start / 100) * axisLength, 0, axisLength - 1);
+    const inputEnd = clampInteger((stretch.end / 100) * axisLength, 1, axisLength);
+    const baseBandSize = Math.max(1, inputEnd - inputStart);
+    const scale = clamp(1 + stretch.amount / 100, 0.15, 2.8);
+    const outputBandSize = Math.max(1, Math.round(baseBandSize * scale));
+    const delta = outputBandSize - baseBandSize;
+
+    const targetWidth = stretch.axis === 'vertical' ? Math.max(2, width + delta) : width;
+    const targetHeight = stretch.axis === 'horizontal' ? Math.max(2, height + delta) : height;
+    const target = new Uint8ClampedArray(targetWidth * targetHeight * channels);
+
+    if (stretch.axis === 'vertical') {
+      const destStart = inputStart;
+      const destEnd = destStart + outputBandSize;
+
+      for (let y = 0; y < targetHeight; y += 1) {
+        for (let x = 0; x < targetWidth; x += 1) {
+          let srcX = x;
+          if (x >= destStart && x < destEnd) {
+            const t = (x - destStart) / Math.max(1, outputBandSize);
+            srcX = inputStart + t * baseBandSize;
+          } else if (x >= destEnd) {
+            srcX = x - delta;
+          }
+
+          const sample = this.sampleBilinear(
+            source,
+            width,
+            height,
+            channels,
+            this.clampPixel(srcX, width - 1),
+            y,
+          );
+          const pixel = (y * targetWidth + x) * channels;
+          for (let c = 0; c < channels; c += 1) {
+            target[pixel + c] = clampInteger(sample[c] ?? 0, 0, 255);
+          }
+        }
+      }
+    } else {
+      const destStart = inputStart;
+      const destEnd = destStart + outputBandSize;
+
+      for (let y = 0; y < targetHeight; y += 1) {
+        for (let x = 0; x < targetWidth; x += 1) {
+          let srcY = y;
+          if (y >= destStart && y < destEnd) {
+            const t = (y - destStart) / Math.max(1, outputBandSize);
+            srcY = inputStart + t * baseBandSize;
+          } else if (y >= destEnd) {
+            srcY = y - delta;
+          }
+
+          const sample = this.sampleBilinear(
+            source,
+            width,
+            height,
+            channels,
+            x,
+            this.clampPixel(srcY, height - 1),
+          );
+          const pixel = (y * targetWidth + x) * channels;
+          for (let c = 0; c < channels; c += 1) {
+            target[pixel + c] = clampInteger(sample[c] ?? 0, 0, 255);
+          }
+        }
+      }
+    }
+
+    return { data: target, width: targetWidth, height: targetHeight };
+  }
+
+  private async applyDeformationBuffer(
+    sourceBuffer: Buffer,
+    deformation: NormalizedEditorDeformation | null,
+  ) {
+    if (!deformation) return sourceBuffer;
+
+    const base = sharp(sourceBuffer, { failOn: 'none' }).ensureAlpha();
+    const { data, info } = await base.raw().toBuffer({ resolveWithObject: true });
+    let width = info.width;
+    let height = info.height;
+    const channels = info.channels;
+
+    let working: Uint8ClampedArray<ArrayBufferLike> = new Uint8ClampedArray(data);
+
+    if (deformation.liquifyStrokes.length > 0) {
+      working = this.applyLiquifyPixels(
+        working,
+        width,
+        height,
+        channels,
+        deformation.liquifyStrokes,
+      );
+    }
+
+    if (deformation.stretch && Math.abs(deformation.stretch.amount) > 0.01) {
+      const stretched = this.applyStretchPixels(
+        working,
+        width,
+        height,
+        channels,
+        deformation.stretch,
+      );
+      working = stretched.data;
+      width = stretched.width;
+      height = stretched.height;
+    }
+
+    const inputMeta = await sharp(sourceBuffer, { failOn: 'none' }).metadata();
+    let output = sharp(Buffer.from(working), {
+      raw: {
+        width,
+        height,
+        channels,
+      },
+    });
+
+    if (inputMeta.format === 'png') {
+      return output.png().toBuffer();
+    }
+
+    if (inputMeta.format === 'webp') {
+      return output.webp({ quality: 92 }).toBuffer();
+    }
+
+    if (inputMeta.format === 'avif') {
+      return output.avif({ quality: 56 }).toBuffer();
+    }
+
+    return output.jpeg({ quality: 92, chromaSubsampling: '4:4:4', mozjpeg: true }).toBuffer();
+  }
+
   private async renderEditedImageBuffer(
     sourceBuffer: Buffer,
     adjustments: NormalizedEditorAdjustments,
-    options?: { preview?: boolean },
+    options?: { preview?: boolean; deformation?: NormalizedEditorDeformation | null },
   ) {
     const {
       temperature,
@@ -657,6 +1004,10 @@ export class MediaController {
           .composite([{ input: vignetteSvg, blend: 'multiply' }])
           .toBuffer();
       }
+    }
+
+    if (options?.deformation) {
+      outputBuffer = await this.applyDeformationBuffer(outputBuffer, options.deformation);
     }
 
     if (options?.preview) {
@@ -1753,7 +2104,7 @@ export class MediaController {
   async previewRender(
     @Req() req: RequestWithUser,
     @Param('id') id: string,
-    @Body() body: { adjustments?: Record<string, unknown> },
+    @Body() body: { adjustments?: Record<string, unknown>; deformation?: EditorDeformationPayload },
     @Res() response: Response,
   ) {
     const media = await this.prisma.media.findFirst({
@@ -1770,8 +2121,12 @@ export class MediaController {
     }
 
     const normalized = normalizeEditorAdjustments(body.adjustments);
+    const normalizedDeformation = normalizeEditorDeformation(body.deformation);
     const sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
-    const previewBuffer = await this.renderEditedImageBuffer(sourceBuffer, normalized, { preview: true });
+    const previewBuffer = await this.renderEditedImageBuffer(sourceBuffer, normalized, {
+      preview: true,
+      deformation: normalizedDeformation,
+    });
 
     response.setHeader('Content-Type', 'image/jpeg');
     response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -1785,7 +2140,7 @@ export class MediaController {
   async applyEdits(
     @Req() req: RequestWithUser,
     @Param('id') id: string,
-    @Body() body: { adjustments?: Record<string, unknown> },
+    @Body() body: { adjustments?: Record<string, unknown>; deformation?: EditorDeformationPayload },
   ) {
     const media = await this.prisma.media.findFirst({
       where: { id, ownerId: req.user!.id },
@@ -1799,11 +2154,14 @@ export class MediaController {
       throw new BadRequestException('Only image files can be edited');
     }
     const normalized = normalizeEditorAdjustments(body.adjustments);
+    const normalizedDeformation = normalizeEditorDeformation(body.deformation);
 
     await this.clearMediaRevisions(media.id, media.ownerId);
 
     const sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
-    const outputBuffer = await this.renderEditedImageBuffer(sourceBuffer, normalized);
+    const outputBuffer = await this.renderEditedImageBuffer(sourceBuffer, normalized, {
+      deformation: normalizedDeformation,
+    });
 
     await this.uploadBufferToR2(media.ownerId, media.filePath, media.mimeType, outputBuffer);
 

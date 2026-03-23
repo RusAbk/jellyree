@@ -25,6 +25,16 @@ type LiquifyStroke = {
   strength: number
 }
 
+type EditorDeformationPayload = {
+  liquifyStrokes?: LiquifyStroke[]
+  stretch?: {
+    axis: StretchAxis
+    start: number
+    end: number
+    amount: number
+  }
+}
+
 const props = defineProps<{
   open: boolean
   activeMedia: MediaItem | null
@@ -63,7 +73,7 @@ const emit = defineEmits<{
   (e: 'reset'): void
   (e: 'resetGroup', group: 'tone' | 'detail' | 'color' | 'geometry'): void
   (e: 'undo'): void
-  (e: 'apply'): void
+  (e: 'apply', payload?: EditorDeformationPayload): void
   (e: 'applyPreset', preset: 'auto' | 'portrait' | 'landscape' | 'night' | 'bw'): void
   (e: 'copyEdits'): void
   (e: 'pasteEdits'): void
@@ -76,9 +86,17 @@ const emit = defineEmits<{
   (e: 'update:editorField', payload: { key: keyof EditorState; value: number | boolean }): void
 }>()
 
+const MIN_PREVIEW_SCALE = 25
+const MAX_PREVIEW_SCALE = 300
+
+function clampPreviewScale(value: number) {
+  if (!Number.isFinite(value)) return 100
+  return Math.max(MIN_PREVIEW_SCALE, Math.min(MAX_PREVIEW_SCALE, Math.round(value)))
+}
+
 const previewScaleModel = computed({
   get: () => props.editorPreviewScale,
-  set: (value: number | string) => emit('update:editorPreviewScale', Number(value)),
+  set: (value: number | string) => emit('update:editorPreviewScale', clampPreviewScale(Number(value))),
 })
 
 const activeTabModel = computed({
@@ -183,51 +201,97 @@ const stageDrag = reactive({
   lastNormY: 0,
 })
 
+const stretchVisualBand = computed(() => {
+  const start = clampPercent(Math.min(stretchBandStart.value, stretchBandEnd.value))
+  const end = clampPercent(Math.max(stretchBandStart.value, stretchBandEnd.value), start, 100)
+  const baseBand = Math.max(0.001, end - start)
+  const scale = Math.max(0.15, Math.min(2.8, 1 + stretchAmount.value / 100))
+  const outputBand = Math.max(0.001, baseBand * scale)
+  const delta = outputBand - baseBand
+  const targetLength = Math.max(0.001, 100 + delta)
+  const visualStart = clampPercent((start / targetLength) * 100)
+  const visualEnd = clampPercent(((start + outputBand) / targetLength) * 100, visualStart, 100)
+
+  return {
+    start,
+    end,
+    baseBand,
+    scale,
+    outputBand,
+    delta,
+    targetLength,
+    visualStart,
+    visualEnd,
+  }
+})
+
+function stretchVisualToInputPercent(visualPercent: number) {
+  const metrics = stretchVisualBand.value
+  const outputCoord = (clampPercent(visualPercent) / 100) * metrics.targetLength
+  const bandOutputStart = metrics.start
+  const bandOutputEnd = metrics.start + metrics.outputBand
+
+  let inputCoord = 0
+  if (outputCoord <= bandOutputStart) {
+    inputCoord = outputCoord
+  } else if (outputCoord >= bandOutputEnd) {
+    inputCoord = outputCoord - metrics.delta
+  } else {
+    inputCoord = metrics.start + (outputCoord - bandOutputStart) / Math.max(0.0001, metrics.scale)
+  }
+
+  return clampPercent(inputCoord)
+}
+
 const stretchOverlayStyle = computed(() => {
+  const visualStart = stretchVisualBand.value.visualStart
+  const visualEnd = stretchVisualBand.value.visualEnd
   if (stretchAxis.value === 'vertical') {
     return {
-      left: `${stretchBandStart.value}%`,
-      width: `${Math.max(0, stretchBandEnd.value - stretchBandStart.value)}%`,
+      left: `${visualStart}%`,
+      width: `${Math.max(0, visualEnd - visualStart)}%`,
       top: '0%',
       height: '100%',
     }
   }
 
   return {
-    top: `${stretchBandStart.value}%`,
-    height: `${Math.max(0, stretchBandEnd.value - stretchBandStart.value)}%`,
+    top: `${visualStart}%`,
+    height: `${Math.max(0, visualEnd - visualStart)}%`,
     left: '0%',
     width: '100%',
   }
 })
 
 const stretchStartHandleStyle = computed(() => {
+  const visualStart = stretchVisualBand.value.visualStart
   if (stretchAxis.value === 'vertical') {
     return {
-      left: `${stretchBandStart.value}%`,
+      left: `${visualStart}%`,
       top: '50%',
       transform: 'translate(-50%, -50%)',
     }
   }
 
   return {
-    top: `${stretchBandStart.value}%`,
+    top: `${visualStart}%`,
     left: '50%',
     transform: 'translate(-50%, -50%)',
   }
 })
 
 const stretchEndHandleStyle = computed(() => {
+  const visualEnd = stretchVisualBand.value.visualEnd
   if (stretchAxis.value === 'vertical') {
     return {
-      left: `${stretchBandEnd.value}%`,
+      left: `${visualEnd}%`,
       top: '50%',
       transform: 'translate(-50%, -50%)',
     }
   }
 
   return {
-    top: `${stretchBandEnd.value}%`,
+    top: `${visualEnd}%`,
     left: '50%',
     transform: 'translate(-50%, -50%)',
   }
@@ -250,18 +314,6 @@ function onStartCrop(event: PointerEvent, mode: CropDragMode) {
 
 function clampPercent(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value))
-}
-
-function normalizePointInElement(event: PointerEvent, target: HTMLElement) {
-  const rect = target.getBoundingClientRect()
-  const normalizedX = rect.width > 0 ? ((event.clientX - rect.left) / rect.width) * 100 : 0
-  const normalizedY = rect.height > 0 ? ((event.clientY - rect.top) / rect.height) * 100 : 0
-  return {
-    x: clampPercent(normalizedX),
-    y: clampPercent(normalizedY),
-    width: rect.width,
-    height: rect.height,
-  }
 }
 
 function pointerOnPreviewImage(event: PointerEvent) {
@@ -331,6 +383,33 @@ function onResetAll() {
   emit('reset')
 }
 
+function buildDeformationPayload(): EditorDeformationPayload | undefined {
+  const hasLiquify = liquifyStrokes.value.length > 0
+  const hasStretch = Math.abs(stretchAmount.value) > 0.01
+  if (!hasLiquify && !hasStretch) return undefined
+
+  const payload: EditorDeformationPayload = {}
+
+  if (hasLiquify) {
+    payload.liquifyStrokes = liquifyStrokes.value.map((stroke) => ({ ...stroke }))
+  }
+
+  if (hasStretch) {
+    payload.stretch = {
+      axis: stretchAxis.value,
+      start: stretchBandStart.value,
+      end: stretchBandEnd.value,
+      amount: stretchAmount.value,
+    }
+  }
+
+  return payload
+}
+
+function onApply() {
+  emit('apply', buildDeformationPayload())
+}
+
 function onResetGroup(group: 'tone' | 'detail' | 'color' | 'geometry') {
   if (group === 'geometry') {
     resetLocalGeometryDeform()
@@ -345,8 +424,6 @@ function onStagePointerDown(event: PointerEvent) {
   const target = event.currentTarget as HTMLElement | null
   if (!target) return
 
-  const point = normalizePointInElement(event, target)
-
   if (geometryTool.value === 'liquify') {
     const imagePoint = pointerOnPreviewImage(event)
     if (!imagePoint) return
@@ -360,13 +437,18 @@ function onStagePointerDown(event: PointerEvent) {
     liquifyCursor.y = imagePoint.stageY
     liquifyCursor.radius = imagePoint.brushRadiusPx
   } else {
-    const axisValue = stretchAxis.value === 'vertical' ? point.x : point.y
-    const threshold = 2.8
-    const inBand = axisValue > stretchBandStart.value && axisValue < stretchBandEnd.value
+    const imagePoint = pointerOnPreviewImage(event)
+    if (!imagePoint) return
 
-    if (Math.abs(axisValue - stretchBandStart.value) <= threshold) {
+    const visualStart = stretchVisualBand.value.visualStart
+    const visualEnd = stretchVisualBand.value.visualEnd
+    const axisValue = stretchAxis.value === 'vertical' ? imagePoint.x : imagePoint.y
+    const threshold = 2.8
+    const inBand = axisValue > visualStart && axisValue < visualEnd
+
+    if (Math.abs(axisValue - visualStart) <= threshold) {
       stageDrag.mode = 'stretch-start'
-    } else if (Math.abs(axisValue - stretchBandEnd.value) <= threshold) {
+    } else if (Math.abs(axisValue - visualEnd) <= threshold) {
       stageDrag.mode = 'stretch-end'
     } else if (inBand) {
       stageDrag.mode = 'stretch-band'
@@ -376,8 +458,8 @@ function onStagePointerDown(event: PointerEvent) {
     }
 
     stageDrag.active = true
-    stageDrag.startNormX = point.x
-    stageDrag.startNormY = point.y
+    stageDrag.startNormX = stretchVisualToInputPercent(imagePoint.x)
+    stageDrag.startNormY = stretchVisualToInputPercent(imagePoint.y)
     stageDrag.originBandStart = stretchBandStart.value
     stageDrag.originBandEnd = stretchBandEnd.value
   }
@@ -394,6 +476,32 @@ function onStagePointerDown(event: PointerEvent) {
   }
 
   event.preventDefault()
+}
+
+function beginStretchDrag(event: PointerEvent, mode: 'stretch-start' | 'stretch-end' | 'stretch-band') {
+  const stage = previewStageRef.value
+  const imagePoint = pointerOnPreviewImage(event)
+  if (!stage || !imagePoint) return
+
+  stageDrag.active = true
+  stageDrag.mode = mode
+  stageDrag.startNormX = stretchVisualToInputPercent(imagePoint.x)
+  stageDrag.startNormY = stretchVisualToInputPercent(imagePoint.y)
+  stageDrag.originBandStart = stretchBandStart.value
+  stageDrag.originBandEnd = stretchBandEnd.value
+  stageDrag.startX = event.clientX
+  stageDrag.startY = event.clientY
+
+  if (typeof stage.setPointerCapture === 'function') {
+    try {
+      stage.setPointerCapture(event.pointerId)
+    } catch {
+      // Ignore when capture is unavailable for this pointer.
+    }
+  }
+
+  event.preventDefault()
+  event.stopPropagation()
 }
 
 function appendLiquifyStroke(fromX: number, fromY: number, toX: number, toY: number) {
@@ -425,7 +533,6 @@ function onStagePointerMove(event: PointerEvent) {
     return
   }
 
-  const point = normalizePointInElement(event, target)
   const imagePoint = pointerOnPreviewImage(event)
 
   if (geometryTool.value === 'liquify') {
@@ -446,7 +553,10 @@ function onStagePointerMove(event: PointerEvent) {
 
   if (!stageDrag.active || stageDrag.mode === 'none') return
 
-  const axisPoint = stretchAxis.value === 'vertical' ? point.x : point.y
+  if (!imagePoint) return
+
+  const axisVisual = stretchAxis.value === 'vertical' ? imagePoint.x : imagePoint.y
+  const axisPoint = stretchVisualToInputPercent(axisVisual)
   const axisStart = stretchAxis.value === 'vertical' ? stageDrag.startNormX : stageDrag.startNormY
   const delta = axisPoint - axisStart
   const minBand = 8
@@ -613,83 +723,72 @@ function applyLiquifyWarp(data: ImageData) {
   }
 }
 
-function mapStretchCoordinate(
-  outputCoord: number,
-  outputStart: number,
-  outputEnd: number,
-  inputStart: number,
-  inputEnd: number,
-  length: number,
-) {
-  const safeLength = Math.max(1, length)
-  const startOut = Math.max(0, Math.min(safeLength, outputStart))
-  const endOut = Math.max(startOut + 1e-4, Math.min(safeLength, outputEnd))
-  const startIn = Math.max(0, Math.min(safeLength, inputStart))
-  const endIn = Math.max(startIn + 1e-4, Math.min(safeLength, inputEnd))
-
-  if (outputCoord <= startOut) {
-    const denom = Math.max(1e-4, startOut)
-    return (outputCoord / denom) * startIn
-  }
-
-  if (outputCoord >= endOut) {
-    const denom = Math.max(1e-4, safeLength - endOut)
-    return endIn + ((outputCoord - endOut) / denom) * (safeLength - endIn)
-  }
-
-  const denom = Math.max(1e-4, endOut - startOut)
-  return startIn + ((outputCoord - startOut) / denom) * (endIn - startIn)
-}
-
 function applyStretchWarp(data: ImageData) {
-  if (Math.abs(stretchAmount.value) <= 0.01) return
+  if (Math.abs(stretchAmount.value) <= 0.01) return data
 
   clampStretchBand()
 
   const width = data.width
   const height = data.height
   const source = new Uint8ClampedArray(data.data)
-  const target = data.data
   const axisLength = stretchAxis.value === 'vertical' ? width : height
 
-  const inputStart = (stretchBandStart.value / 100) * axisLength
-  const inputEnd = (stretchBandEnd.value / 100) * axisLength
+  const inputStart = Math.floor((stretchBandStart.value / 100) * axisLength)
+  const inputEnd = Math.ceil((stretchBandEnd.value / 100) * axisLength)
   const baseBandSize = Math.max(1, inputEnd - inputStart)
-  const scale = Math.max(0.25, Math.min(2.6, 1 + stretchAmount.value / 100))
-  const outputBandSize = Math.max(1, Math.min(axisLength - 2, baseBandSize * scale))
-  const center = (inputStart + inputEnd) / 2
+  const scale = Math.max(0.15, Math.min(2.8, 1 + stretchAmount.value / 100))
+  const outputBandSize = Math.max(1, Math.round(baseBandSize * scale))
+  const delta = outputBandSize - baseBandSize
 
-  let outputStart = center - outputBandSize / 2
-  let outputEnd = center + outputBandSize / 2
-  if (outputStart < 0) {
-    outputEnd -= outputStart
-    outputStart = 0
-  }
-  if (outputEnd > axisLength) {
-    const overflow = outputEnd - axisLength
-    outputStart -= overflow
-    outputEnd = axisLength
-  }
-  outputStart = Math.max(0, outputStart)
-  outputEnd = Math.min(axisLength, outputEnd)
+  const targetWidth = stretchAxis.value === 'vertical' ? Math.max(2, width + delta) : width
+  const targetHeight = stretchAxis.value === 'horizontal' ? Math.max(2, height + delta) : height
+  const target = new Uint8ClampedArray(targetWidth * targetHeight * 4)
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const srcX = stretchAxis.value === 'vertical'
-        ? mapStretchCoordinate(x, outputStart, outputEnd, inputStart, inputEnd, width)
-        : x
-      const srcY = stretchAxis.value === 'horizontal'
-        ? mapStretchCoordinate(y, outputStart, outputEnd, inputStart, inputEnd, height)
-        : y
+  if (stretchAxis.value === 'vertical') {
+    const destStart = inputStart
+    const destEnd = destStart + outputBandSize
 
-      const sample = sampleBilinear(source, width, height, srcX, srcY)
-      const idx = (y * width + x) * 4
-      target[idx] = clampChannel(Math.round(sample[0] || 0))
-      target[idx + 1] = clampChannel(Math.round(sample[1] || 0))
-      target[idx + 2] = clampChannel(Math.round(sample[2] || 0))
-      target[idx + 3] = clampChannel(Math.round(sample[3] || 255))
+    for (let y = 0; y < targetHeight; y += 1) {
+      for (let x = 0; x < targetWidth; x += 1) {
+        let srcX = x
+        if (x >= destStart && x < destEnd) {
+          const t = (x - destStart) / Math.max(1, outputBandSize)
+          srcX = inputStart + t * baseBandSize
+        } else if (x >= destEnd) {
+          srcX = x - delta
+        }
+        const sample = sampleBilinear(source, width, height, clampPixel(srcX, width - 1), y)
+        const idx = (y * targetWidth + x) * 4
+        target[idx] = clampChannel(Math.round(sample[0] || 0))
+        target[idx + 1] = clampChannel(Math.round(sample[1] || 0))
+        target[idx + 2] = clampChannel(Math.round(sample[2] || 0))
+        target[idx + 3] = clampChannel(Math.round(sample[3] || 255))
+      }
+    }
+  } else {
+    const destStart = inputStart
+    const destEnd = destStart + outputBandSize
+
+    for (let y = 0; y < targetHeight; y += 1) {
+      for (let x = 0; x < targetWidth; x += 1) {
+        let srcY = y
+        if (y >= destStart && y < destEnd) {
+          const t = (y - destStart) / Math.max(1, outputBandSize)
+          srcY = inputStart + t * baseBandSize
+        } else if (y >= destEnd) {
+          srcY = y - delta
+        }
+        const sample = sampleBilinear(source, width, height, x, clampPixel(srcY, height - 1))
+        const idx = (y * targetWidth + x) * 4
+        target[idx] = clampChannel(Math.round(sample[0] || 0))
+        target[idx + 1] = clampChannel(Math.round(sample[1] || 0))
+        target[idx + 2] = clampChannel(Math.round(sample[2] || 0))
+        target[idx + 3] = clampChannel(Math.round(sample[3] || 255))
+      }
     }
   }
+
+  return new ImageData(target, targetWidth, targetHeight)
 }
 
 function averageBlur(source: Uint8ClampedArray, width: number, height: number) {
@@ -879,10 +978,14 @@ async function renderJsPreview() {
     }
 
     context.drawImage(image, 0, 0, width, height)
-    const data = context.getImageData(0, 0, width, height)
+    let data = context.getImageData(0, 0, width, height)
     applyJsAdjustments(data, props.editor)
     applyLiquifyWarp(data)
-    applyStretchWarp(data)
+    data = applyStretchWarp(data)
+    if (canvas.width !== data.width || canvas.height !== data.height) {
+      canvas.width = data.width
+      canvas.height = data.height
+    }
     context.putImageData(data, 0, 0)
 
     if (runId !== previewRenderRunId) return
@@ -1018,6 +1121,14 @@ function onPreviewPointerUpOrCancel() {
   emit('setBeforeAfterActive', false)
 }
 
+function onPreviewWheel(event: WheelEvent) {
+  if (!event.ctrlKey && !event.metaKey) return
+  event.preventDefault()
+  const direction = event.deltaY > 0 ? -1 : 1
+  const next = props.editorPreviewScale + direction * 8
+  emit('update:editorPreviewScale', clampPreviewScale(next))
+}
+
 function onBeforeAfterMouseDown() {
   emit('setBeforeAfterActive', true)
 }
@@ -1051,7 +1162,7 @@ onBeforeUnmount(() => {
 
     <div class="editor-layout">
       <div class="editor-canvas">
-        <div class="editor-preview">
+        <div class="editor-preview" @wheel="onPreviewWheel">
           <div
             v-if="thumbSrc && canPreview"
             ref="previewStageRef"
@@ -1075,11 +1186,9 @@ onBeforeUnmount(() => {
                 class="editor-stretch-overlay"
                 :class="{ vertical: stretchAxis === 'vertical', horizontal: stretchAxis === 'horizontal' }"
               >
-                <div class="editor-stretch-band" :style="stretchOverlayStyle"></div>
-                <span class="editor-stretch-line start" :style="stretchStartHandleStyle"></span>
-                <span class="editor-stretch-line end" :style="stretchEndHandleStyle"></span>
-                <button class="editor-stretch-handle start" type="button" :style="stretchStartHandleStyle">‹›</button>
-                <button class="editor-stretch-handle end" type="button" :style="stretchEndHandleStyle">‹›</button>
+                <div class="editor-stretch-band" :style="stretchOverlayStyle" @pointerdown="beginStretchDrag($event, 'stretch-band')"></div>
+                <span class="editor-stretch-line start" :style="stretchStartHandleStyle" @pointerdown="beginStretchDrag($event, 'stretch-start')"></span>
+                <span class="editor-stretch-line end" :style="stretchEndHandleStyle" @pointerdown="beginStretchDrag($event, 'stretch-end')"></span>
               </div>
               <div
                 v-if="clippingOverlayEnabled"
@@ -1274,7 +1383,7 @@ onBeforeUnmount(() => {
           <button class="btn ghost" @click="onResetAll">Reset</button>
           <button class="btn ghost" @click="emit('close')">Cancel</button>
           <button class="btn ghost" :disabled="saving || undoCount === 0" @click="emit('undo')">Undo apply ({{ undoCount }})</button>
-          <button class="btn" :disabled="saving" @click="emit('apply')">Apply permanently</button>
+          <button class="btn" :disabled="saving" @click="onApply">Apply permanently</button>
         </div>
       </aside>
     </div>
@@ -1381,7 +1490,7 @@ onBeforeUnmount(() => {
         <button class="btn ghost" aria-label="Undo last apply" title="Undo" :disabled="saving || undoCount === 0" @click="emit('undo')">
           <i class="ri-arrow-go-back-line" aria-hidden="true"></i>
         </button>
-        <button class="btn" aria-label="Apply permanently" title="Apply" :disabled="saving" @click="emit('apply')">
+        <button class="btn" aria-label="Apply permanently" title="Apply" :disabled="saving" @click="onApply">
           <i class="ri-check-line" aria-hidden="true"></i>
         </button>
       </div>

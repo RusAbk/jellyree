@@ -341,13 +341,31 @@ export const api = {
   applyMediaEdits: (
     token: string,
     mediaId: string,
-    adjustments: Record<string, number>,
+    payload: {
+      adjustments: Record<string, number>
+      deformation?: {
+        liquifyStrokes?: Array<{
+          fromX: number
+          fromY: number
+          toX: number
+          toY: number
+          radius: number
+          strength: number
+        }>
+        stretch?: {
+          axis: 'vertical' | 'horizontal'
+          start: number
+          end: number
+          amount: number
+        }
+      }
+    },
   ) =>
     request<MediaItem>(
       `/media/${mediaId}/apply-edits`,
       {
         method: 'POST',
-        body: JSON.stringify({ adjustments }),
+        body: JSON.stringify(payload),
       },
       token,
     ),

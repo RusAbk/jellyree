@@ -134,7 +134,8 @@ export function useEditorPreview(params: UseEditorPreviewParams) {
     if (!cropDrag.active) return
     const target = event.currentTarget as HTMLElement | null
     if (!target) return
-    const rect = target.getBoundingClientRect()
+    const frame = target.querySelector('.editor-image-frame') as HTMLElement | null
+    const rect = (frame || target).getBoundingClientRect()
     if (!rect.width || !rect.height) return
 
     const dx = ((event.clientX - cropDrag.startX) / rect.width) * 100
