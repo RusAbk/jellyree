@@ -2479,19 +2479,6 @@ label {
   align-items: center;
 }
 
-.editor-engine-toggle {
-  position: fixed;
-  z-index: 130;
-  top: 14px;
-  right: 22px;
-  display: inline-flex;
-  gap: 6px;
-  padding: 6px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.92);
-}
-
 .editor-fullscreen {
   position: fixed;
   inset: 0;
@@ -2515,37 +2502,6 @@ label {
   gap: 12px;
 }
 
-.editor-layout-photopea {
-  display: block;
-}
-
-.editor-photopea-wrap {
-  height: 100%;
-  min-height: 0;
-  border-radius: 12px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-}
-
-.editor-photopea-iframe {
-  width: 100%;
-  height: 100%;
-  min-height: 78vh;
-  border: 0;
-  background: #1b1b1b;
-}
-
-.editor-photopea-unavailable {
-  height: 100%;
-  min-height: 320px;
-  display: grid;
-  place-items: center;
-  border: 1px dashed var(--border-strong);
-  border-radius: 12px;
-  color: var(--text-dim);
-  background: var(--bg-2);
-}
-
 .editor-canvas {
   min-height: 0;
 }
@@ -2554,11 +2510,64 @@ label {
   border: 1px solid var(--border);
   background: var(--bg-2);
   border-radius: 12px;
-  padding: 10px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  gap: 12px;
+}
+
+.editor-sidebar-v2 {
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--accent) 8%, transparent) 0 45%, transparent 65%),
+    var(--bg-2);
+}
+
+.editor-v2-head {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-3) 90%, white 10%), color-mix(in srgb, var(--bg-2) 88%, var(--accent) 12%));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   gap: 10px;
+}
+
+.editor-v2-section-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.editor-v2-section-tabs .chip {
+  justify-content: center;
+  min-width: 0;
+  padding: 7px 6px;
+  font-size: 12px;
+}
+
+.editor-v2-scroll {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.editor-v2-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-3) 92%, white 8%);
+  padding: 9px;
+  display: grid;
+  gap: 8px;
+}
+
+.editor-actions-dock {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 
 .editor-preview {
@@ -2880,7 +2889,7 @@ label {
 
 .editor-controls-pro {
   gap: 8px;
-  max-height: 330px;
+  max-height: none;
 }
 
 .editor-tool-box {
@@ -3064,6 +3073,12 @@ label {
 
 .editor-actions .btn {
   flex: 1 1 calc(50% - 10px);
+}
+
+@media (max-width: 1380px) {
+  .editor-v2-section-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .editor-mobile-panel {

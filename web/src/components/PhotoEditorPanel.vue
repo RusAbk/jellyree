@@ -1114,18 +1114,31 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <aside class="editor-sidebar">
-        <div class="editor-toolbar-groups editor-toolbar-groups-pro">
-          <div class="editor-pro-head">
-            <div>
-              <div class="editor-toolbar-label">Creator Studio</div>
-              <div class="editor-pro-subtitle">Fast looks + pro controls</div>
-            </div>
-            <div class="editor-pro-history">History {{ historyPosition }}/{{ historyTotal }}</div>
+      <aside class="editor-sidebar editor-sidebar-v2">
+        <div class="editor-v2-head">
+          <div>
+            <div class="editor-toolbar-label">Editing workflow</div>
+            <div class="editor-pro-subtitle">Quick looks, fine tune, then apply</div>
           </div>
+          <div class="editor-pro-history">History {{ historyPosition }}/{{ historyTotal }}</div>
+        </div>
 
-          <div class="editor-presets editor-presets-pro">
-            <span class="editor-toolbar-label">Quick Recipes</span>
+        <div class="editor-v2-section-tabs">
+          <button
+            v-for="section in sectionButtons"
+            :key="`section-v2-${section.key}`"
+            class="chip"
+            :class="{ active: desktopSection === section.key }"
+            type="button"
+            @click="desktopSection = section.key"
+          >
+            {{ section.label }}
+          </button>
+        </div>
+
+        <div class="editor-v2-scroll">
+          <div v-if="desktopSection === 'quick'" class="editor-v2-block">
+            <span class="editor-toolbar-label">One-tap looks</span>
             <div class="editor-recipe-grid">
               <button
                 v-for="recipe in quickRecipes"
@@ -1138,100 +1151,74 @@ onBeforeUnmount(() => {
                 <span class="editor-recipe-caption">{{ recipe.caption }}</span>
               </button>
             </div>
+          </div>
+
+          <div v-if="desktopSection === 'quick'" class="editor-v2-block">
+            <span class="editor-toolbar-label">Utilities</span>
             <div class="editor-chip-row">
               <button class="chip" type="button" @click="emit('applySmartAutoEnhance')">Smart Auto</button>
               <button class="chip" type="button" @click="emit('applyPreset', 'auto')">Classic Auto</button>
-              <button class="chip" type="button" @mousedown="onBeforeAfterMouseDown" @mouseup="onBeforeAfterMouseUp" @mouseleave="onBeforeAfterMouseUp" @touchstart.prevent="emit('setBeforeAfterActive', true)" @touchend.prevent="emit('setBeforeAfterActive', false)">
-                Hold Compare
-              </button>
-            </div>
-          </div>
-
-          <div class="editor-presets">
-            <div class="editor-chip-row editor-section-tabs">
-              <button
-                v-for="section in sectionButtons"
-                :key="`section-${section.key}`"
-                class="chip"
-                :class="{ active: desktopSection === section.key }"
-                type="button"
-                @click="desktopSection = section.key"
-              >
-                {{ section.label }}
-              </button>
-            </div>
-
-            <div v-if="desktopSection === 'quick'" class="editor-chip-row">
+              <button class="chip" type="button" @mousedown="onBeforeAfterMouseDown" @mouseup="onBeforeAfterMouseUp" @mouseleave="onBeforeAfterMouseUp" @touchstart.prevent="emit('setBeforeAfterActive', true)" @touchend.prevent="emit('setBeforeAfterActive', false)">Hold Compare</button>
               <button class="chip" type="button" @click="emit('copyEdits')">Copy edits</button>
               <button class="chip" type="button" :disabled="!canPasteEdits" @click="emit('pasteEdits')">Paste edits</button>
               <button class="chip" type="button" :disabled="!canUndoStep" @click="emit('undoStep')">Undo step</button>
               <button class="chip" type="button" :disabled="!canRedoStep" @click="emit('redoStep')">Redo step</button>
-              <button class="chip" type="button" :class="{ active: clippingOverlayEnabled }" @click="emit('toggleClippingOverlay')">
-                Clipping overlay
-              </button>
+              <button class="chip" type="button" :class="{ active: clippingOverlayEnabled }" @click="emit('toggleClippingOverlay')">Clipping overlay</button>
+            </div>
+          </div>
+
+          <div v-if="desktopSection !== 'quick'" class="editor-v2-block">
+            <span class="editor-toolbar-label">Adjustments</span>
+
+            <div v-if="desktopSection === 'geometry'" class="editor-tool-box">
+              <span class="editor-toolbar-label">Geometry tool</span>
+              <div class="editor-chip-row">
+                <button class="chip" type="button" :class="{ active: geometryTool === 'crop' }" @click="geometryTool = 'crop'">Crop</button>
+                <button class="chip" type="button" :class="{ active: geometryTool === 'liquify' }" @click="geometryTool = 'liquify'">Liquify</button>
+                <button class="chip" type="button" :class="{ active: geometryTool === 'stretch' }" @click="geometryTool = 'stretch'">Stretch</button>
+              </div>
             </div>
 
-            <div v-else class="editor-controls editor-controls-pro">
-              <template v-if="desktopSection === 'geometry'">
-                <div class="editor-tool-box">
-                  <span class="editor-toolbar-label">Geometry tool</span>
-                  <div class="editor-chip-row">
-                    <button class="chip" type="button" :class="{ active: geometryTool === 'crop' }" @click="geometryTool = 'crop'">
-                      Crop
-                    </button>
-                    <button class="chip" type="button" :class="{ active: geometryTool === 'liquify' }" @click="geometryTool = 'liquify'">
-                      Liquify
-                    </button>
-                    <button class="chip" type="button" :class="{ active: geometryTool === 'stretch' }" @click="geometryTool = 'stretch'">
-                      Stretch
-                    </button>
-                  </div>
+            <div v-if="desktopSection === 'geometry' && geometryTool === 'liquify'" class="editor-tool-box">
+              <span class="editor-toolbar-label">Liquify brush</span>
+              <div class="slider-row slider-row-pro">
+                <span class="slider-row-title">Brush size</span>
+                <div class="slider-row-main">
+                  <input v-model="liquifyBrushSize" type="range" min="8" max="55" />
+                  <span class="slider-value-pill">{{ liquifyBrushSize }}%</span>
                 </div>
-
-                <div v-if="geometryTool === 'liquify'" class="editor-tool-box">
-                  <span class="editor-toolbar-label">Liquify brush</span>
-                  <div class="slider-row slider-row-pro">
-                    <span class="slider-row-title">Brush size</span>
-                    <div class="slider-row-main">
-                      <input v-model="liquifyBrushSize" type="range" min="8" max="55" />
-                      <span class="slider-value-pill">{{ liquifyBrushSize }}%</span>
-                    </div>
-                  </div>
-                  <div class="slider-row slider-row-pro">
-                    <span class="slider-row-title">Intensity</span>
-                    <div class="slider-row-main">
-                      <input v-model="liquifyIntensity" type="range" min="5" max="100" />
-                      <span class="slider-value-pill">{{ liquifyIntensity }}%</span>
-                    </div>
-                  </div>
-                  <div class="editor-chip-row">
-                    <button class="chip" type="button" @click="clearLiquify">Clear liquify</button>
-                  </div>
+              </div>
+              <div class="slider-row slider-row-pro">
+                <span class="slider-row-title">Intensity</span>
+                <div class="slider-row-main">
+                  <input v-model="liquifyIntensity" type="range" min="5" max="100" />
+                  <span class="slider-value-pill">{{ liquifyIntensity }}%</span>
                 </div>
+              </div>
+              <div class="editor-chip-row">
+                <button class="chip" type="button" @click="clearLiquify">Clear liquify</button>
+              </div>
+            </div>
 
-                <div v-if="geometryTool === 'stretch'" class="editor-tool-box">
-                  <span class="editor-toolbar-label">Stretch zone</span>
-                  <div class="editor-chip-row">
-                    <button class="chip" type="button" :class="{ active: stretchAxis === 'vertical' }" @click="stretchAxis = 'vertical'">
-                      Vertical
-                    </button>
-                    <button class="chip" type="button" :class="{ active: stretchAxis === 'horizontal' }" @click="stretchAxis = 'horizontal'">
-                      Horizontal
-                    </button>
-                  </div>
-                  <div class="slider-row slider-row-pro">
-                    <span class="slider-row-title">Amount</span>
-                    <div class="slider-row-main">
-                      <input v-model="stretchAmount" type="range" min="-85" max="85" />
-                      <span class="slider-value-pill">{{ stretchAmount }}%</span>
-                    </div>
-                  </div>
-                  <div class="editor-chip-row">
-                    <button class="chip" type="button" @click="resetStretch">Reset stretch</button>
-                  </div>
+            <div v-if="desktopSection === 'geometry' && geometryTool === 'stretch'" class="editor-tool-box">
+              <span class="editor-toolbar-label">Stretch zone</span>
+              <div class="editor-chip-row">
+                <button class="chip" type="button" :class="{ active: stretchAxis === 'vertical' }" @click="stretchAxis = 'vertical'">Vertical</button>
+                <button class="chip" type="button" :class="{ active: stretchAxis === 'horizontal' }" @click="stretchAxis = 'horizontal'">Horizontal</button>
+              </div>
+              <div class="slider-row slider-row-pro">
+                <span class="slider-row-title">Amount</span>
+                <div class="slider-row-main">
+                  <input v-model="stretchAmount" type="range" min="-85" max="85" />
+                  <span class="slider-value-pill">{{ stretchAmount }}%</span>
                 </div>
-              </template>
+              </div>
+              <div class="editor-chip-row">
+                <button class="chip" type="button" @click="resetStretch">Reset stretch</button>
+              </div>
+            </div>
 
+            <div class="editor-controls editor-controls-pro">
               <div v-for="control in activeSectionSliders" :key="`control-${control.key}`" class="slider-row slider-row-pro">
                 <span class="slider-row-title">{{ control.label }}</span>
                 <div class="slider-row-main">
@@ -1257,7 +1244,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="editor-histogram">
+          <div class="editor-histogram editor-v2-block">
             <div class="editor-histogram-head">
               <span class="editor-toolbar-label">Histogram</span>
               <span class="muted">Shadows {{ clippingStats.shadows.toFixed(1) }}% · Highlights {{ clippingStats.highlights.toFixed(1) }}%</span>
@@ -1272,7 +1259,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="editor-presets">
+          <div class="editor-v2-block">
             <span class="editor-toolbar-label">Reset groups</span>
             <div class="editor-chip-row">
               <button class="chip" type="button" @click="onResetGroup('tone')">Tone</button>
@@ -1283,12 +1270,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="editor-actions">
+        <div class="editor-actions editor-actions-dock">
           <button class="btn ghost" @click="onResetAll">Reset</button>
           <button class="btn ghost" @click="emit('close')">Cancel</button>
-          <button class="btn ghost" :disabled="saving || undoCount === 0" @click="emit('undo')">
-            Undo apply ({{ undoCount }})
-          </button>
+          <button class="btn ghost" :disabled="saving || undoCount === 0" @click="emit('undo')">Undo apply ({{ undoCount }})</button>
           <button class="btn" :disabled="saving" @click="emit('apply')">Apply permanently</button>
         </div>
       </aside>
