@@ -955,7 +955,7 @@ export class MediaController {
               filename: file.originalname,
               relativePath: relativePaths[index] || null,
               mimeType: file.mimetype,
-              sizeBytes: file.size,
+              sizeBytes: Number(file.size || 0),
               width: extracted?.width ?? null,
               height: extracted?.height ?? null,
               capturedAt,

@@ -9,7 +9,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import {
   DeleteObjectCommand,
-  ListObjectsV2Command,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { randomUUID } from 'crypto';
@@ -49,39 +48,6 @@ export class AuthService {
     });
 
     return this.r2Client;
-  }
-
-  private async getStorageUsageFromR2(ownerId: string) {
-    const client = this.getR2Client();
-    if (!client) return null;
-
-    let continuationToken: string | undefined;
-    let totalSizeBytes = 0;
-
-    do {
-      const response = await client.send(
-        new ListObjectsV2Command({
-          Bucket: r2BucketName,
-          Prefix: `${ownerId}/`,
-          ContinuationToken: continuationToken,
-          MaxKeys: 1000,
-        }),
-      );
-
-      (response.Contents || []).forEach((entry) => {
-        if (typeof entry.Size === 'number' && Number.isFinite(entry.Size)) {
-          totalSizeBytes += entry.Size;
-        }
-      });
-
-      continuationToken = response.IsTruncated
-        ? response.NextContinuationToken || undefined
-        : undefined;
-    } while (continuationToken);
-
-    return {
-      totalSizeBytes,
-    };
   }
 
   private async deleteObjectsFromR2(ownerId: string, filePaths: string[]) {
@@ -507,26 +473,17 @@ export class AuthService {
 
     const dbTotalSizeBytes = Number(aggregate._sum.sizeBytes ?? 0);
 
-    let storageTotalSizeBytes: number | null = null;
-    try {
-      const storageStats = await this.getStorageUsageFromR2(userId);
-      storageTotalSizeBytes = storageStats ? storageStats.totalSizeBytes : null;
-    } catch {
-      storageTotalSizeBytes = null;
-    }
-
+    const totalSizeBytes = dbTotalSizeBytes;
     const hasDbStats = fileCount > 0 || albumCount > 0 || dbTotalSizeBytes > 0;
-    const hasStorageStats = typeof storageTotalSizeBytes === 'number';
-    const totalSizeBytes = hasStorageStats ? storageTotalSizeBytes : dbTotalSizeBytes;
 
     return {
       fileCount,
       albumCount,
       totalSizeBytes,
       dbTotalSizeBytes,
-      storageTotalSizeBytes,
-      statsSource: hasStorageStats ? 'r2' : 'db',
-      isBackfilled: hasDbStats || hasStorageStats,
+      storageTotalSizeBytes: null,
+      statsSource: 'db',
+      isBackfilled: hasDbStats,
     };
   }
 

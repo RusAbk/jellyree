@@ -240,8 +240,10 @@ let undoCommitTimer: ReturnType<typeof setTimeout> | null = null
 let pendingUndoAction: null | {
   commit: () => Promise<unknown>
   rollback: () => void
+  onCommitSuccess?: () => void
   successMessage?: string
 } = null
+let accountSnapshotRefreshInFlight: Promise<{ profile: MeProfile; stats: AccountStats } | null> | null = null
 const UNDO_SNACKBAR_MS = 8000
 let popStateHandler: (() => void) | null = null
 const thumbLoadsInFlight = new Map<string, Promise<void>>()
@@ -1193,6 +1195,77 @@ async function refreshAccountSnapshot() {
   return { profile, stats }
 }
 
+function refreshAccountSnapshotInBackground() {
+  if (accountSnapshotRefreshInFlight) return
+  accountSnapshotRefreshInFlight = refreshAccountSnapshot()
+    .catch(() => null)
+    .finally(() => {
+      accountSnapshotRefreshInFlight = null
+    })
+}
+
+function applyAccountStatsDelta(delta: { fileCount?: number; totalSizeBytes?: number; albumCount?: number }) {
+  if (!accountStats.value) return
+  const next = { ...accountStats.value }
+
+  if (typeof delta.fileCount === 'number' && Number.isFinite(delta.fileCount)) {
+    next.fileCount = Math.max(0, next.fileCount + Math.trunc(delta.fileCount))
+  }
+
+  if (typeof delta.totalSizeBytes === 'number' && Number.isFinite(delta.totalSizeBytes)) {
+    next.totalSizeBytes = Math.max(0, next.totalSizeBytes + Math.trunc(delta.totalSizeBytes))
+  }
+
+  if (typeof delta.albumCount === 'number' && Number.isFinite(delta.albumCount)) {
+    next.albumCount = Math.max(0, next.albumCount + Math.trunc(delta.albumCount))
+  }
+
+  accountStats.value = next
+}
+
+function getCachedAccountSnapshot() {
+  if (!accountProfile.value || !accountStats.value) return null
+  return {
+    profile: accountProfile.value,
+    stats: accountStats.value,
+  }
+}
+
+function assertSnapshotWithinLimits(
+  snapshot: { profile: MeProfile; stats: AccountStats },
+  fileDelta: number,
+  sizeDeltaBytes: number,
+  albumDelta: number,
+) {
+  const { profile, stats } = snapshot
+  if (profile.maxFileCount != null && stats.fileCount + fileDelta > profile.maxFileCount) {
+    throw new Error(`File limit reached (${profile.maxFileCount}). Delete files or request unlimited.`)
+  }
+
+  if (profile.maxTotalSizeBytes != null && stats.totalSizeBytes + sizeDeltaBytes > profile.maxTotalSizeBytes) {
+    throw new Error(`Storage limit reached (${formatFileSize(profile.maxTotalSizeBytes)}). Free space or request unlimited.`)
+  }
+
+  if (profile.maxAlbumCount != null && stats.albumCount + albumDelta > profile.maxAlbumCount) {
+    throw new Error(`Album limit reached (${profile.maxAlbumCount}). Delete albums or request unlimited.`)
+  }
+}
+
+async function refreshAccountSnapshotWithTimeout(timeoutMs = 900) {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  try {
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeoutId = setTimeout(() => resolve(null), timeoutMs)
+    })
+    const snapshot = await Promise.race([refreshAccountSnapshot(), timeoutPromise])
+    return snapshot
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId)
+    }
+  }
+}
+
 function createAdminDraftFromUsers(users: AdminUserOverview[]) {
   const next: Record<string, { maxTotalSizeBytes: string; maxFileCount: string; maxAlbumCount: string }> = {}
   for (const user of users) {
@@ -1391,21 +1464,17 @@ function estimateNewAlbumsFromRelativePaths(relativePaths: string[], baseAlbumId
 }
 
 async function assertWithinLimits(fileDelta: number, sizeDeltaBytes: number, albumDelta: number) {
-  const snapshot = await refreshAccountSnapshot()
+  const cached = getCachedAccountSnapshot()
+  if (cached) {
+    assertSnapshotWithinLimits(cached, fileDelta, sizeDeltaBytes, albumDelta)
+    // Keep limits cache warm in background without blocking UX-critical actions.
+    refreshAccountSnapshotInBackground()
+    return
+  }
+
+  const snapshot = await refreshAccountSnapshotWithTimeout(900)
   if (!snapshot) return
-
-  const { profile, stats } = snapshot
-  if (profile.maxFileCount != null && stats.fileCount + fileDelta > profile.maxFileCount) {
-    throw new Error(`File limit reached (${profile.maxFileCount}). Delete files or request unlimited.`)
-  }
-
-  if (profile.maxTotalSizeBytes != null && stats.totalSizeBytes + sizeDeltaBytes > profile.maxTotalSizeBytes) {
-    throw new Error(`Storage limit reached (${formatFileSize(profile.maxTotalSizeBytes)}). Free space or request unlimited.`)
-  }
-
-  if (profile.maxAlbumCount != null && stats.albumCount + albumDelta > profile.maxAlbumCount) {
-    throw new Error(`Album limit reached (${profile.maxAlbumCount}). Delete albums or request unlimited.`)
-  }
+  assertSnapshotWithinLimits(snapshot, fileDelta, sizeDeltaBytes, albumDelta)
 }
 
 function closeAccountPage() {
@@ -3204,10 +3273,20 @@ async function uploadFiles(files: FileList | null) {
     startUploadProgress(list.length)
     message.value = `Uploading ${list.length} files...`
 
-    await api.uploadMedia(authHeaders(), list, relativePaths, {
+    const uploadResult = await api.uploadMedia(authHeaders(), list, relativePaths, {
       albumId: activeAlbumId.value || undefined,
       fileLastModifieds: list.map((file) => file.lastModified),
     }, updateUploadProgress)
+    const created = uploadResult.created || []
+    const createdCount = created.length > 0 ? created.length : list.length
+    const createdSizeBytes = created.length > 0
+      ? created.reduce((sum, item) => sum + item.sizeBytes, 0)
+      : totalSizeBytes
+    applyAccountStatsDelta({
+      fileCount: createdCount,
+      totalSizeBytes: createdSizeBytes,
+    })
+    refreshAccountSnapshotInBackground()
     finishUploadProgress()
     message.value = `Uploaded ${list.length} file(s)`
     await loadAll()
@@ -3317,11 +3396,22 @@ async function handleDrop(event: DragEvent) {
     startUploadProgress(files.length)
     message.value = `Uploading ${files.length} files...`
 
-    await api.uploadMedia(authHeaders(), files, relativePaths, {
+    const uploadResult = await api.uploadMedia(authHeaders(), files, relativePaths, {
       albumId: activeAlbumId.value || undefined,
       createAlbumsFromFolders: hasFolders,
       fileLastModifieds: files.map((file) => file.lastModified),
     }, updateUploadProgress)
+    const created = uploadResult.created || []
+    const createdCount = created.length > 0 ? created.length : files.length
+    const createdSizeBytes = created.length > 0
+      ? created.reduce((sum, item) => sum + item.sizeBytes, 0)
+      : totalSizeBytes
+    applyAccountStatsDelta({
+      fileCount: createdCount,
+      totalSizeBytes: createdSizeBytes,
+      albumCount: albumDelta,
+    })
+    refreshAccountSnapshotInBackground()
     finishUploadProgress()
     message.value = `Uploaded ${files.length} file(s)`
     await loadAll()
@@ -3468,6 +3558,7 @@ async function commitPendingUndoAction() {
 
   try {
     await action.commit()
+    action.onCommitSuccess?.()
     if (action.successMessage) {
       message.value = action.successMessage
     }
@@ -3494,6 +3585,7 @@ async function scheduleUndoAction(payload: {
   text: string
   commit: () => Promise<unknown>
   rollback: () => void
+  onCommitSuccess?: () => void
   successMessage?: string
 }) {
   if (pendingUndoAction) {
@@ -3503,6 +3595,7 @@ async function scheduleUndoAction(payload: {
   pendingUndoAction = {
     commit: payload.commit,
     rollback: payload.rollback,
+    onCommitSuccess: payload.onCommitSuccess,
     successMessage: payload.successMessage,
   }
 
@@ -3726,6 +3819,8 @@ async function createAlbum() {
   try {
     await assertWithinLimits(0, 0, 1)
     await api.createAlbum(authHeaders(), createAlbumName.value.trim(), undefined, activeAlbumId.value || null)
+    applyAccountStatsDelta({ albumCount: 1 })
+    refreshAccountSnapshotInBackground()
     createAlbumName.value = ''
     createAlbumDialogOpen.value = false
     closeFabMenu()
@@ -3766,6 +3861,8 @@ async function deleteAlbum(album: Album) {
 
   try {
     await api.deleteAlbum(authHeaders(), album.id)
+    applyAccountStatsDelta({ albumCount: -1 })
+    refreshAccountSnapshotInBackground()
     pinnedAlbumIds.value = pinnedAlbumIds.value.filter((id) => id !== album.id)
     expandedAlbumIds.value = expandedAlbumIds.value.filter((id) => id !== album.id)
     savePins()
@@ -3857,6 +3954,7 @@ async function bulkDeleteSelected() {
   const removedEntries = media.value
     .map((item, index) => ({ item, index }))
     .filter((entry) => idsSet.has(entry.item.id))
+  const removedTotalSizeBytes = removedEntries.reduce((sum, entry) => sum + entry.item.sizeBytes, 0)
 
   const previousSelected = [...selectedMediaIds.value]
   const previousActive = activeMediaId.value
@@ -3870,6 +3968,13 @@ async function bulkDeleteSelected() {
   await scheduleUndoAction({
     text: `Deleted ${mediaIds.length} photo(s)`,
     commit: () => api.bulkDelete(authHeaders(), mediaIds),
+    onCommitSuccess: () => {
+      applyAccountStatsDelta({
+        fileCount: -mediaIds.length,
+        totalSizeBytes: -removedTotalSizeBytes,
+      })
+      refreshAccountSnapshotInBackground()
+    },
     rollback: () => {
       const restored = [...media.value]
       removedEntries
@@ -3918,6 +4023,7 @@ async function deleteMedia(mediaId: string) {
   const previousSelected = [...selectedMediaIds.value]
   const previousActive = activeMediaId.value
   const previousLightboxOpen = lightboxOpen.value
+  const removedSizeBytes = removed.item.sizeBytes
 
   media.value = media.value.filter((item) => item.id !== mediaId)
   selectedMediaIds.value = selectedMediaIds.value.filter((id) => id !== mediaId)
@@ -3933,6 +4039,10 @@ async function deleteMedia(mediaId: string) {
   await scheduleUndoAction({
     text: 'Deleted photo',
     commit: () => api.deleteMedia(authHeaders(), mediaId),
+    onCommitSuccess: () => {
+      applyAccountStatsDelta({ fileCount: -1, totalSizeBytes: -removedSizeBytes })
+      refreshAccountSnapshotInBackground()
+    },
     rollback: () => {
       const restored = [...media.value]
       const nextIndex = Math.max(0, Math.min(removed.index, restored.length))
@@ -3949,6 +4059,8 @@ async function duplicateMedia(mediaId: string) {
   if (!token.value) return
   try {
     const copied = await api.copyMedia(authHeaders(), mediaId)
+    applyAccountStatsDelta({ fileCount: 1, totalSizeBytes: copied.sizeBytes })
+    refreshAccountSnapshotInBackground()
     showToast('Copy created')
     await loadAll()
     activeMediaId.value = copied.id
@@ -3962,6 +4074,8 @@ async function convertMediaToJpg(mediaId: string) {
   if (!token.value) return
   try {
     const converted = await api.convertMediaToJpg(authHeaders(), mediaId)
+    applyAccountStatsDelta({ fileCount: 1, totalSizeBytes: converted.sizeBytes })
+    refreshAccountSnapshotInBackground()
     showToast('JPG copy created')
     await loadAll()
     activeMediaId.value = converted.id
