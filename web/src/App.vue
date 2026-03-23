@@ -39,13 +39,6 @@ type GalleryBreadcrumb = {
   section?: 'all' | 'favorites' | 'tags'
 }
 
-type ParsedTagInput = {
-  committed: string[]
-  committedSet: Set<string>
-  draftRaw: string
-  draft: string
-}
-
 type EditingTagChip = {
   key: string
   label: string
@@ -140,6 +133,10 @@ const galleryMainRef = ref<HTMLElement | null>(null)
 const masonryRef = ref<HTMLElement | null>(null)
 const tagsInputRef = ref<HTMLInputElement | null>(null)
 const lightboxTagsInputRef = ref<HTMLInputElement | null>(null)
+const detailsTagDraftInput = ref('')
+const detailsCommittedTags = ref<string[]>([])
+const lightboxTagDraftInput = ref('')
+const lightboxCommittedTags = ref<string[]>([])
 const selectedMediaIds = ref<string[]>([])
 const mediaPage = ref(1)
 const mediaHasMore = ref(true)
@@ -150,7 +147,6 @@ const isTouchUi = ref(false)
 const suppressTagsCommitOnBlur = ref(false)
 const suppressLightboxTagsCommitOnBlur = ref(false)
 const lightboxTagsEditing = ref(false)
-const lightboxTagsInput = ref('')
 const lightboxZoom = ref(1)
 
 const touchGesture = reactive({
@@ -426,87 +422,49 @@ const galleryTitle = computed(() => {
   return 'All photos'
 })
 
-function parseTagInput(raw: string): ParsedTagInput {
-  const parts = raw.split(',')
-  const draftRaw = parts.pop() ?? ''
-  const committed = Array.from(
-    new Set(
-      parts
-        .map((part) => part.trim().toLowerCase())
-        .filter(Boolean),
-    ),
-  )
-  return {
-    committed,
-    committedSet: new Set(committed),
-    draftRaw,
-    draft: draftRaw.trim().toLowerCase(),
-  }
+function normalizeTagToken(value: string) {
+  return value.trim().toLowerCase()
 }
 
-function buildTagSuggestions(parsed: ParsedTagInput) {
+function uniqueNormalizedTags(values: string[]) {
+  return Array.from(new Set(values.map((value) => normalizeTagToken(value)).filter(Boolean)))
+}
+
+function buildTagSuggestions(committed: string[], draftRaw: string) {
+  const committedSet = new Set(committed)
+  const draft = normalizeTagToken(draftRaw)
   return sortedTags.value.filter((tag) => {
     const normalized = tag.name.toLowerCase()
-    if (parsed.committedSet.has(normalized)) return false
-    if (!parsed.draft) return true
-    return normalized.startsWith(parsed.draft)
+    if (committedSet.has(normalized)) return false
+    if (!draft) return true
+    return normalized.startsWith(draft)
   })
 }
 
-const parsedTagsInput = computed(() => {
-  return parseTagInput(editor.tagsInput)
-})
-
-const parsedLightboxTagsInput = computed(() => {
-  return parseTagInput(lightboxTagsInput.value)
-})
-
 const detailsEditingTagChips = computed<EditingTagChip[]>(() => {
-  const chips = parsedTagsInput.value.committed.map((name) => ({
+  return detailsCommittedTags.value.map((name) => ({
     key: `details-committed-${name}`,
     label: name,
     draft: false,
   }))
-
-  const draftLabel = parsedTagsInput.value.draftRaw.trim()
-  if (draftLabel) {
-    chips.push({
-      key: `details-draft-${draftLabel.toLowerCase()}`,
-      label: draftLabel,
-      draft: true,
-    })
-  }
-
-  return chips
 })
 
 const lightboxEditingTagChips = computed<EditingTagChip[]>(() => {
-  const chips = parsedLightboxTagsInput.value.committed.map((name) => ({
+  return lightboxCommittedTags.value.map((name) => ({
     key: `lightbox-committed-${name}`,
     label: name,
     draft: false,
   }))
-
-  const draftLabel = parsedLightboxTagsInput.value.draftRaw.trim()
-  if (draftLabel) {
-    chips.push({
-      key: `lightbox-draft-${draftLabel.toLowerCase()}`,
-      label: draftLabel,
-      draft: true,
-    })
-  }
-
-  return chips
 })
 
 const tagSuggestions = computed(() => {
   if (activeDetailsField.value !== 'tags') return []
-  return buildTagSuggestions(parsedTagsInput.value)
+  return buildTagSuggestions(detailsCommittedTags.value, detailsTagDraftInput.value)
 })
 
 const lightboxTagSuggestions = computed(() => {
   if (!lightboxTagsEditing.value) return []
-  return buildTagSuggestions(parsedLightboxTagsInput.value)
+  return buildTagSuggestions(lightboxCommittedTags.value, lightboxTagDraftInput.value)
 })
 
 const filteredMedia = computed(() => {
@@ -2715,25 +2673,64 @@ function onBreadcrumbClick(crumb: GalleryBreadcrumb) {
   }
 }
 
-function applyTagSuggestionToInput(rawInput: string, tagName: string) {
-  const parts = rawInput.split(',')
-  parts.pop()
-  const base = Array.from(
-    new Set(
-      parts
-        .map((part) => part.trim())
-        .filter(Boolean),
-    ),
-  )
-  const alreadyAdded = base.some((part) => part.toLowerCase() === tagName.toLowerCase())
-  if (!alreadyAdded) {
-    base.push(tagName)
+function pushTagIntoCommitted(target: 'details' | 'lightbox', rawTag: string) {
+  const normalized = normalizeTagToken(rawTag)
+  if (!normalized) return false
+  if (target === 'details') {
+    if (detailsCommittedTags.value.includes(normalized)) return false
+    detailsCommittedTags.value = [...detailsCommittedTags.value, normalized]
+    return true
   }
-  return `${base.join(', ')}, `
+  if (lightboxCommittedTags.value.includes(normalized)) return false
+  lightboxCommittedTags.value = [...lightboxCommittedTags.value, normalized]
+  return true
+}
+
+function consumeTagDraft(target: 'details' | 'lightbox') {
+  const source = target === 'details' ? detailsTagDraftInput.value : lightboxTagDraftInput.value
+  const parts = source.split(',')
+  const draftTail = parts.pop() ?? ''
+
+  for (const part of parts) {
+    pushTagIntoCommitted(target, part)
+  }
+
+  if (target === 'details') {
+    detailsTagDraftInput.value = draftTail
+  } else {
+    lightboxTagDraftInput.value = draftTail
+  }
+}
+
+function commitDraftTagAsChip(target: 'details' | 'lightbox') {
+  consumeTagDraft(target)
+  if (target === 'details') {
+    const draft = detailsTagDraftInput.value
+    const added = pushTagIntoCommitted('details', draft)
+    if (added) {
+      detailsTagDraftInput.value = ''
+    }
+    return
+  }
+
+  const draft = lightboxTagDraftInput.value
+  const added = pushTagIntoCommitted('lightbox', draft)
+  if (added) {
+    lightboxTagDraftInput.value = ''
+  }
+}
+
+function onDetailsTagDraftInput() {
+  consumeTagDraft('details')
+}
+
+function onLightboxTagDraftInput() {
+  consumeTagDraft('lightbox')
 }
 
 function applyTagSuggestion(tagName: string) {
-  editor.tagsInput = applyTagSuggestionToInput(editor.tagsInput, tagName)
+  pushTagIntoCommitted('details', tagName)
+  detailsTagDraftInput.value = ''
 
   suppressTagsCommitOnBlur.value = true
   setTimeout(() => {
@@ -2743,7 +2740,8 @@ function applyTagSuggestion(tagName: string) {
 }
 
 function applyLightboxTagSuggestion(tagName: string) {
-  lightboxTagsInput.value = applyTagSuggestionToInput(lightboxTagsInput.value, tagName)
+  pushTagIntoCommitted('lightbox', tagName)
+  lightboxTagDraftInput.value = ''
 
   suppressLightboxTagsCommitOnBlur.value = true
   setTimeout(() => {
@@ -2752,48 +2750,30 @@ function applyLightboxTagSuggestion(tagName: string) {
   }, 0)
 }
 
-function composeTagInput(committed: string[], draftRaw: string) {
-  const committedPart = committed.join(', ')
-  const draftPart = draftRaw.trim()
-  if (!committedPart) return draftPart
-  if (!draftPart) return committedPart
-  return `${committedPart}, ${draftPart}`
-}
-
-function removeTagChipFromRawInput(rawInput: string, chip: EditingTagChip) {
-  const parsed = parseTagInput(rawInput)
-  if (chip.draft) {
-    return composeTagInput(parsed.committed, '')
-  }
-
-  const nextCommitted = parsed.committed.filter((name) => name !== chip.label.toLowerCase())
-  return composeTagInput(nextCommitted, parsed.draftRaw)
-}
-
 function removeDetailsTagChip(chip: EditingTagChip) {
-  editor.tagsInput = removeTagChipFromRawInput(editor.tagsInput, chip)
+  const normalized = chip.label.toLowerCase()
+  detailsCommittedTags.value = detailsCommittedTags.value.filter((name) => name !== normalized)
   nextTick(() => tagsInputRef.value?.focus())
 }
 
 function removeLightboxTagChip(chip: EditingTagChip) {
-  lightboxTagsInput.value = removeTagChipFromRawInput(lightboxTagsInput.value, chip)
+  const normalized = chip.label.toLowerCase()
+  lightboxCommittedTags.value = lightboxCommittedTags.value.filter((name) => name !== normalized)
   nextTick(() => lightboxTagsInputRef.value?.focus())
 }
 
 function onDetailsTagInputBackspace(event: KeyboardEvent) {
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing) return
-  const parsed = parseTagInput(editor.tagsInput)
-  if (parsed.committed.length === 0 || parsed.draftRaw.trim().length > 0) return
+  if (detailsTagDraftInput.value.trim().length > 0 || detailsCommittedTags.value.length === 0) return
   event.preventDefault()
-  editor.tagsInput = composeTagInput(parsed.committed.slice(0, -1), '')
+  detailsCommittedTags.value = detailsCommittedTags.value.slice(0, -1)
 }
 
 function onLightboxTagInputBackspace(event: KeyboardEvent) {
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing) return
-  const parsed = parseTagInput(lightboxTagsInput.value)
-  if (parsed.committed.length === 0 || parsed.draftRaw.trim().length > 0) return
+  if (lightboxTagDraftInput.value.trim().length > 0 || lightboxCommittedTags.value.length === 0) return
   event.preventDefault()
-  lightboxTagsInput.value = composeTagInput(parsed.committed.slice(0, -1), '')
+  lightboxCommittedTags.value = lightboxCommittedTags.value.slice(0, -1)
 }
 
 async function renameTagFromSidebar(tag: Tag) {
@@ -3538,27 +3518,31 @@ async function scheduleUndoAction(payload: {
 }
 
 function normalizeTags(input: string) {
-  const unique = new Set(
-    input
-      .split(',')
-      .map((tag) => tag.trim().toLowerCase())
-      .filter(Boolean),
-  )
-  return [...unique].sort()
+  return uniqueNormalizedTags(input.split(',')).sort()
+}
+
+function initializeDetailsTagEditor(rawTags: string) {
+  detailsCommittedTags.value = uniqueNormalizedTags(rawTags.split(','))
+  detailsTagDraftInput.value = ''
+}
+
+function initializeLightboxTagEditor(rawTags: string) {
+  lightboxCommittedTags.value = uniqueNormalizedTags(rawTags.split(','))
+  lightboxTagDraftInput.value = ''
 }
 
 function beginLightboxTagsEdit() {
   if (!activeMedia.value || !lightboxOpen.value) return
-  lightboxTagsInput.value = activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', ')
+  initializeLightboxTagEditor(activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', '))
   lightboxTagsEditing.value = true
   nextTick(() => lightboxTagsInputRef.value?.focus())
 }
 
 function cancelLightboxTagsEdit() {
   if (activeMedia.value) {
-    lightboxTagsInput.value = activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', ')
+    initializeLightboxTagEditor(activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', '))
   } else {
-    lightboxTagsInput.value = ''
+    initializeLightboxTagEditor('')
   }
   lightboxTagsEditing.value = false
 }
@@ -3568,8 +3552,10 @@ async function commitLightboxTagsEdit() {
   if (suppressLightboxTagsCommitOnBlur.value) return
   if (saving.value) return
 
+  commitDraftTagAsChip('lightbox')
+
   const mediaId = activeMedia.value.id
-  const nextTags = normalizeTags(lightboxTagsInput.value)
+  const nextTags = [...lightboxCommittedTags.value].sort()
   const currentTags = normalizeTags(activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(','))
 
   if (nextTags.join('|') === currentTags.join('|')) {
@@ -3592,6 +3578,9 @@ async function commitLightboxTagsEdit() {
 
 function beginDetailsFieldEdit(field: 'filename' | 'tags' | 'album' | 'metadataCreatedAt' | 'metadataModifiedAt' | 'location') {
   if (!activeMedia.value) return
+  if (field === 'tags') {
+    initializeDetailsTagEditor(activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', '))
+  }
   activeDetailsField.value = field
 }
 
@@ -3605,7 +3594,9 @@ function cancelDetailsFieldEdit(field: 'filename' | 'tags' | 'album' | 'metadata
     editor.filename = splitFilenameParts(activeMedia.value.filename).baseName
   }
   if (field === 'tags') {
-    editor.tagsInput = activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', ')
+    const rawTags = activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(', ')
+    editor.tagsInput = rawTags
+    initializeDetailsTagEditor(rawTags)
   }
   if (field === 'album') {
     targetAlbumId.value = activeMedia.value.albumMedia[0]?.albumId || ''
@@ -3652,8 +3643,10 @@ async function commitDetailsFieldEdit(field: 'filename' | 'tags' | 'album' | 'me
     }
 
     if (field === 'tags') {
-      const nextTags = normalizeTags(editor.tagsInput)
+      commitDraftTagAsChip('details')
+      const nextTags = [...detailsCommittedTags.value].sort()
       const currentTags = normalizeTags(activeMedia.value.mediaTags.map((entry) => entry.tag.name).join(','))
+      editor.tagsInput = nextTags.join(', ')
       if (nextTags.join('|') === currentTags.join('|')) {
         activeDetailsField.value = null
         return
@@ -4435,9 +4428,9 @@ watch(
 watch(activeMedia, (item) => {
   applyMediaToEditor(item)
   if (item) {
-    lightboxTagsInput.value = item.mediaTags.map((entry) => entry.tag.name).join(', ')
+    initializeLightboxTagEditor(item.mediaTags.map((entry) => entry.tag.name).join(', '))
   } else {
-    lightboxTagsInput.value = ''
+    initializeLightboxTagEditor('')
     lightboxTagsEditing.value = false
   }
   if (!item) {
@@ -5574,10 +5567,11 @@ onBeforeUnmount(() => {
                 </span>
                 <input
                   ref="tagsInputRef"
-                  v-model="editor.tagsInput"
+                  v-model="detailsTagDraftInput"
                   class="input tag-inline-input-field"
                   placeholder="tag1, tag2"
                   autofocus
+                  @input="onDetailsTagDraftInput"
                   @blur="commitDetailsFieldEdit('tags')"
                   @keydown.backspace="onDetailsTagInputBackspace"
                   @keydown.enter.prevent="commitDetailsFieldEdit('tags')"
@@ -5803,10 +5797,11 @@ onBeforeUnmount(() => {
                       </span>
                       <input
                         ref="lightboxTagsInputRef"
-                        v-model="lightboxTagsInput"
+                        v-model="lightboxTagDraftInput"
                         class="input tag-inline-input-field"
                         placeholder="tag1, tag2"
                         @click.stop
+                        @input="onLightboxTagDraftInput"
                         @blur="commitLightboxTagsEdit"
                         @keydown.backspace="onLightboxTagInputBackspace"
                         @keydown.enter.prevent="commitLightboxTagsEdit"
