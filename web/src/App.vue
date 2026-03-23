@@ -2752,6 +2752,50 @@ function applyLightboxTagSuggestion(tagName: string) {
   }, 0)
 }
 
+function composeTagInput(committed: string[], draftRaw: string) {
+  const committedPart = committed.join(', ')
+  const draftPart = draftRaw.trim()
+  if (!committedPart) return draftPart
+  if (!draftPart) return committedPart
+  return `${committedPart}, ${draftPart}`
+}
+
+function removeTagChipFromRawInput(rawInput: string, chip: EditingTagChip) {
+  const parsed = parseTagInput(rawInput)
+  if (chip.draft) {
+    return composeTagInput(parsed.committed, '')
+  }
+
+  const nextCommitted = parsed.committed.filter((name) => name !== chip.label.toLowerCase())
+  return composeTagInput(nextCommitted, parsed.draftRaw)
+}
+
+function removeDetailsTagChip(chip: EditingTagChip) {
+  editor.tagsInput = removeTagChipFromRawInput(editor.tagsInput, chip)
+  nextTick(() => tagsInputRef.value?.focus())
+}
+
+function removeLightboxTagChip(chip: EditingTagChip) {
+  lightboxTagsInput.value = removeTagChipFromRawInput(lightboxTagsInput.value, chip)
+  nextTick(() => lightboxTagsInputRef.value?.focus())
+}
+
+function onDetailsTagInputBackspace(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing) return
+  const parsed = parseTagInput(editor.tagsInput)
+  if (parsed.committed.length === 0 || parsed.draftRaw.trim().length > 0) return
+  event.preventDefault()
+  editor.tagsInput = composeTagInput(parsed.committed.slice(0, -1), '')
+}
+
+function onLightboxTagInputBackspace(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing) return
+  const parsed = parseTagInput(lightboxTagsInput.value)
+  if (parsed.committed.length === 0 || parsed.draftRaw.trim().length > 0) return
+  event.preventDefault()
+  lightboxTagsInput.value = composeTagInput(parsed.committed.slice(0, -1), '')
+}
+
 async function renameTagFromSidebar(tag: Tag) {
   if (!token.value) return
   const nextName = window.prompt('Rename tag', tag.name)?.trim()
@@ -5509,26 +5553,37 @@ onBeforeUnmount(() => {
               {{ editor.tagsInput || '—' }}
             </div>
             <div v-else class="tag-input-wrap">
-              <div v-if="detailsEditingTagChips.length > 0" class="chips tag-editing-chips">
+              <div class="tag-inline-input" @click="tagsInputRef?.focus()">
                 <span
                   v-for="chip in detailsEditingTagChips"
                   :key="chip.key"
-                  class="chip-lite"
+                  class="chip-lite tag-inline-chip"
                   :class="{ 'tag-chip-draft': chip.draft }"
                 >
-                  # {{ chip.label }}
+                  <span># {{ chip.label }}</span>
+                  <button
+                    class="tag-chip-remove"
+                    type="button"
+                    aria-label="Remove tag"
+                    title="Remove tag"
+                    @mousedown.prevent
+                    @click.stop="removeDetailsTagChip(chip)"
+                  >
+                    ×
+                  </button>
                 </span>
+                <input
+                  ref="tagsInputRef"
+                  v-model="editor.tagsInput"
+                  class="input tag-inline-input-field"
+                  placeholder="tag1, tag2"
+                  autofocus
+                  @blur="commitDetailsFieldEdit('tags')"
+                  @keydown.backspace="onDetailsTagInputBackspace"
+                  @keydown.enter.prevent="commitDetailsFieldEdit('tags')"
+                  @keydown.esc.prevent="cancelDetailsFieldEdit('tags')"
+                />
               </div>
-              <input
-                ref="tagsInputRef"
-                v-model="editor.tagsInput"
-                class="input"
-                placeholder="tag1, tag2"
-                autofocus
-                @blur="commitDetailsFieldEdit('tags')"
-                @keydown.enter.prevent="commitDetailsFieldEdit('tags')"
-                @keydown.esc.prevent="cancelDetailsFieldEdit('tags')"
-              />
               <div v-if="tagSuggestions.length > 0" class="tag-suggestions" @pointerdown.prevent>
                 <button
                   v-for="tag in tagSuggestions"
@@ -5727,26 +5782,37 @@ onBeforeUnmount(() => {
                 </div>
                 <div v-else class="lightbox-tags-edit">
                   <div class="tag-input-wrap">
-                    <div v-if="lightboxEditingTagChips.length > 0" class="chips tag-editing-chips">
+                    <div class="tag-inline-input" @click="lightboxTagsInputRef?.focus()">
                       <span
                         v-for="chip in lightboxEditingTagChips"
                         :key="chip.key"
-                        class="chip-lite"
+                        class="chip-lite tag-inline-chip"
                         :class="{ 'tag-chip-draft': chip.draft }"
                       >
-                        # {{ chip.label }}
+                        <span># {{ chip.label }}</span>
+                        <button
+                          class="tag-chip-remove"
+                          type="button"
+                          aria-label="Remove tag"
+                          title="Remove tag"
+                          @mousedown.prevent
+                          @click.stop="removeLightboxTagChip(chip)"
+                        >
+                          ×
+                        </button>
                       </span>
+                      <input
+                        ref="lightboxTagsInputRef"
+                        v-model="lightboxTagsInput"
+                        class="input tag-inline-input-field"
+                        placeholder="tag1, tag2"
+                        @click.stop
+                        @blur="commitLightboxTagsEdit"
+                        @keydown.backspace="onLightboxTagInputBackspace"
+                        @keydown.enter.prevent="commitLightboxTagsEdit"
+                        @keydown.esc.prevent="cancelLightboxTagsEdit"
+                      />
                     </div>
-                    <input
-                      ref="lightboxTagsInputRef"
-                      v-model="lightboxTagsInput"
-                      class="input"
-                      placeholder="tag1, tag2"
-                      @click.stop
-                      @blur="commitLightboxTagsEdit"
-                      @keydown.enter.prevent="commitLightboxTagsEdit"
-                      @keydown.esc.prevent="cancelLightboxTagsEdit"
-                    />
                     <div v-if="lightboxTagSuggestions.length > 0" class="tag-suggestions" @pointerdown.prevent>
                       <button
                         v-for="tag in lightboxTagSuggestions"

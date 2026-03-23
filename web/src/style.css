@@ -1812,6 +1812,67 @@ label {
   margin-bottom: 6px;
 }
 
+.tag-inline-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 5px 8px;
+  background: var(--bg-3);
+  cursor: text;
+}
+
+.tag-inline-input:focus-within {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.tag-inline-chip {
+  gap: 6px;
+  padding-right: 5px;
+}
+
+.tag-chip-remove {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 999px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  background: transparent;
+  color: var(--text-dim);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tag-chip-remove:hover {
+  background: var(--bg-4);
+  color: var(--text);
+}
+
+.tag-chip-remove:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+.tag-inline-input-field {
+  flex: 1 1 120px;
+  width: auto;
+  min-width: 120px;
+  border: none;
+  border-radius: 0;
+  padding: 4px 2px;
+  background: transparent;
+}
+
+.tag-inline-input-field:focus {
+  outline: none;
+  border-color: transparent;
+}
+
 .tag-chip-draft {
   border-style: dashed;
 }
