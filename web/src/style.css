@@ -2684,6 +2684,36 @@ label {
   gap: 10px;
 }
 
+.editor-toolbar-groups-pro {
+  gap: 12px;
+}
+
+.editor-pro-head {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--bg-3) 86%, white 14%), color-mix(in srgb, var(--bg-2) 90%, var(--accent) 10%));
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.editor-pro-subtitle {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.editor-pro-history {
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.75);
+}
+
 .editor-presets {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -2704,6 +2734,81 @@ label {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.editor-recipe-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.editor-recipe-card {
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 8px 9px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.9), color-mix(in srgb, var(--bg-2) 90%, var(--accent) 10%));
+  color: var(--text);
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.editor-recipe-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent);
+  box-shadow: 0 8px 20px rgba(31, 41, 64, 0.14);
+}
+
+.editor-recipe-title {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.editor-recipe-caption {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.editor-section-tabs {
+  gap: 7px;
+}
+
+.editor-controls-pro {
+  gap: 8px;
+  max-height: 330px;
+}
+
+.slider-row-pro {
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+}
+
+.slider-row-title {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.slider-row-main {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.slider-value-pill {
+  min-width: 42px;
+  text-align: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: rgba(255, 255, 255, 0.85);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
 }
 
 .editor-chip-row .chip.active {
@@ -2852,6 +2957,13 @@ label {
   gap: 8px;
   overflow-x: auto;
   padding-bottom: 6px;
+}
+
+.editor-mobile-quick-recipes {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
 }
 
 .editor-mobile-tabs .chip.active {
@@ -3244,6 +3356,10 @@ label {
     display: grid;
     gap: 8px;
     padding-bottom: calc(2px + env(safe-area-inset-bottom));
+  }
+
+  .editor-recipe-grid {
+    grid-template-columns: 1fr;
   }
 
   .editor-mobile-control .slider-row {

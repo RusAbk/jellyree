@@ -3,6 +3,16 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { MediaItem } from '../api'
 import type { CropDragMode, EditorMobileTab, EditorState } from '../composables/useEditorState'
 
+type QuickRecipeKey =
+  | 'peachy-clean'
+  | 'social-pop'
+  | 'cinematic'
+  | 'film-matte'
+  | 'sunset-glow'
+  | 'night-rescue'
+  | 'portrait-soft'
+  | 'bw-pro'
+
 const props = defineProps<{
   open: boolean
   activeMedia: MediaItem | null
@@ -47,6 +57,8 @@ const emit = defineEmits<{
   (e: 'pasteEdits'): void
   (e: 'undoStep'): void
   (e: 'redoStep'): void
+  (e: 'applyQuickRecipe', recipe: QuickRecipeKey): void
+  (e: 'applySmartAutoEnhance'): void
   (e: 'setBeforeAfterActive', value: boolean): void
   (e: 'toggleClippingOverlay'): void
   (e: 'update:editorField', payload: { key: keyof EditorState; value: number | boolean }): void
@@ -60,6 +72,70 @@ const previewScaleModel = computed({
 const activeTabModel = computed({
   get: () => props.activeEditorMobileTab,
   set: (value: EditorMobileTab) => emit('update:activeEditorMobileTab', value),
+})
+
+const quickRecipes: Array<{ key: QuickRecipeKey; label: string; caption: string }> = [
+  { key: 'peachy-clean', label: 'Peachy Clean', caption: 'clean glow' },
+  { key: 'social-pop', label: 'Social Pop', caption: 'color boost' },
+  { key: 'portrait-soft', label: 'Portrait Soft', caption: 'skin smooth' },
+  { key: 'sunset-glow', label: 'Sunset Glow', caption: 'warm mood' },
+  { key: 'night-rescue', label: 'Night Rescue', caption: 'lift shadows' },
+  { key: 'cinematic', label: 'Cinematic', caption: 'teal mood' },
+  { key: 'film-matte', label: 'Film Matte', caption: 'faded film' },
+  { key: 'bw-pro', label: 'BW Pro', caption: 'deep mono' },
+]
+
+type DesktopSection = 'quick' | 'tone' | 'detail' | 'color' | 'geometry'
+const desktopSection = ref<DesktopSection>('quick')
+
+const sectionButtons: Array<{ key: DesktopSection; label: string }> = [
+  { key: 'quick', label: 'Quick' },
+  { key: 'tone', label: 'Tone' },
+  { key: 'detail', label: 'Detail' },
+  { key: 'color', label: 'Color' },
+  { key: 'geometry', label: 'Geometry' },
+]
+
+type SliderFieldKey = keyof EditorState | 'previewScale'
+
+type SliderConfig = {
+  key: SliderFieldKey
+  label: string
+  min: number
+  max: number
+  step?: number
+}
+
+const sectionSliders: Record<Exclude<DesktopSection, 'quick'>, SliderConfig[]> = {
+  tone: [
+    { key: 'brightness', label: 'Brightness', min: -60, max: 60 },
+    { key: 'contrast', label: 'Contrast', min: -60, max: 60 },
+    { key: 'toneDepth', label: 'Tone depth', min: -100, max: 100 },
+    { key: 'shadowsLevel', label: 'Shadows', min: -100, max: 100 },
+    { key: 'highlightsLevel', label: 'Highlights', min: -100, max: 100 },
+  ],
+  detail: [
+    { key: 'sharpness', label: 'Sharpness', min: 0, max: 100 },
+    { key: 'definition', label: 'Definition', min: -100, max: 100 },
+    { key: 'glamour', label: 'Glamour', min: 0, max: 100 },
+    { key: 'vignette', label: 'Vignette', min: 0, max: 100 },
+  ],
+  color: [
+    { key: 'temperature', label: 'Temperature', min: -100, max: 100 },
+    { key: 'saturation', label: 'Saturation', min: -60, max: 60 },
+    { key: 'grayscale', label: 'Grayscale', min: 0, max: 100 },
+    { key: 'sepia', label: 'Sepia', min: 0, max: 100 },
+  ],
+  geometry: [
+    { key: 'previewScale', label: 'Preview scale', min: 25, max: 300 },
+    { key: 'cropZoom', label: 'Crop zoom', min: 0, max: 60 },
+    { key: 'rotate', label: 'Rotate', min: -180, max: 180, step: 90 },
+  ],
+}
+
+const activeSectionSliders = computed(() => {
+  if (desktopSection.value === 'quick') return []
+  return sectionSliders[desktopSection.value]
 })
 
 function onStartCrop(event: PointerEvent, mode: CropDragMode) {
@@ -330,6 +406,22 @@ function updateEditorNumberField(key: keyof EditorState, event: Event) {
   emit('update:editorField', { key, value: Number(target.value) })
 }
 
+function updateSliderField(key: SliderFieldKey, event: Event) {
+  const target = event.target as HTMLInputElement | null
+  if (!target) return
+  const value = Number(target.value)
+  if (key === 'previewScale') {
+    emit('update:editorPreviewScale', value)
+    return
+  }
+  emit('update:editorField', { key, value })
+}
+
+function sliderValue(key: SliderFieldKey) {
+  if (key === 'previewScale') return props.editorPreviewScale
+  return props.editor[key]
+}
+
 function updateEditorBooleanField(key: keyof EditorState, event: Event) {
   const target = event.target as HTMLInputElement | null
   if (!target) return
@@ -440,24 +532,53 @@ onBeforeUnmount(() => {
       </div>
 
       <aside class="editor-sidebar">
-        <div class="editor-toolbar-groups">
-          <div class="editor-presets">
-            <span class="editor-toolbar-label">Presets</span>
+        <div class="editor-toolbar-groups editor-toolbar-groups-pro">
+          <div class="editor-pro-head">
+            <div>
+              <div class="editor-toolbar-label">Creator Studio</div>
+              <div class="editor-pro-subtitle">Fast looks + pro controls</div>
+            </div>
+            <div class="editor-pro-history">History {{ historyPosition }}/{{ historyTotal }}</div>
+          </div>
+
+          <div class="editor-presets editor-presets-pro">
+            <span class="editor-toolbar-label">Quick Recipes</span>
+            <div class="editor-recipe-grid">
+              <button
+                v-for="recipe in quickRecipes"
+                :key="`recipe-${recipe.key}`"
+                class="editor-recipe-card"
+                type="button"
+                @click="emit('applyQuickRecipe', recipe.key)"
+              >
+                <span class="editor-recipe-title">{{ recipe.label }}</span>
+                <span class="editor-recipe-caption">{{ recipe.caption }}</span>
+              </button>
+            </div>
             <div class="editor-chip-row">
-              <button class="chip" type="button" @click="emit('applyPreset', 'auto')">Auto</button>
-              <button class="chip" type="button" @click="emit('applyPreset', 'portrait')">Portrait</button>
-              <button class="chip" type="button" @click="emit('applyPreset', 'landscape')">Landscape</button>
-              <button class="chip" type="button" @click="emit('applyPreset', 'night')">Night</button>
-              <button class="chip" type="button" @click="emit('applyPreset', 'bw')">BW</button>
+              <button class="chip" type="button" @click="emit('applySmartAutoEnhance')">Smart Auto</button>
+              <button class="chip" type="button" @click="emit('applyPreset', 'auto')">Classic Auto</button>
+              <button class="chip" type="button" @mousedown="onBeforeAfterMouseDown" @mouseup="onBeforeAfterMouseUp" @mouseleave="onBeforeAfterMouseUp" @touchstart.prevent="emit('setBeforeAfterActive', true)" @touchend.prevent="emit('setBeforeAfterActive', false)">
+                Hold Compare
+              </button>
             </div>
           </div>
 
           <div class="editor-presets">
-            <span class="editor-toolbar-label">Editing tools</span>
-            <div class="editor-chip-row">
-              <button class="chip" type="button" @mousedown="onBeforeAfterMouseDown" @mouseup="onBeforeAfterMouseUp" @mouseleave="onBeforeAfterMouseUp" @touchstart.prevent="emit('setBeforeAfterActive', true)" @touchend.prevent="emit('setBeforeAfterActive', false)">
-                Before/After
+            <div class="editor-chip-row editor-section-tabs">
+              <button
+                v-for="section in sectionButtons"
+                :key="`section-${section.key}`"
+                class="chip"
+                :class="{ active: desktopSection === section.key }"
+                type="button"
+                @click="desktopSection = section.key"
+              >
+                {{ section.label }}
               </button>
+            </div>
+
+            <div v-if="desktopSection === 'quick'" class="editor-chip-row">
               <button class="chip" type="button" @click="emit('copyEdits')">Copy edits</button>
               <button class="chip" type="button" :disabled="!canPasteEdits" @click="emit('pasteEdits')">Paste edits</button>
               <button class="chip" type="button" :disabled="!canUndoStep" @click="emit('undoStep')">Undo step</button>
@@ -466,7 +587,31 @@ onBeforeUnmount(() => {
                 Clipping overlay
               </button>
             </div>
-            <div class="muted">History {{ historyPosition }} / {{ historyTotal }}</div>
+
+            <div v-else class="editor-controls editor-controls-pro">
+              <div v-for="control in activeSectionSliders" :key="`control-${control.key}`" class="slider-row slider-row-pro">
+                <span class="slider-row-title">{{ control.label }}</span>
+                <div class="slider-row-main">
+                  <input
+                    :value="sliderValue(control.key)"
+                    type="range"
+                    :min="control.min"
+                    :max="control.max"
+                    :step="control.step || 1"
+                    @input="updateSliderField(control.key, $event)"
+                  />
+                  <span class="slider-value-pill">{{ Number(sliderValue(control.key)).toFixed(0) }}</span>
+                </div>
+              </div>
+
+              <div v-if="desktopSection === 'geometry'" class="slider-row switches">
+                <span>Mirror</span>
+                <div class="switch-group">
+                  <label><input :checked="editor.flipX" type="checkbox" @change="updateEditorBooleanField('flipX', $event)" /> Horizontal</label>
+                  <label><input :checked="editor.flipY" type="checkbox" @change="updateEditorBooleanField('flipY', $event)" /> Vertical</label>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="editor-histogram">
@@ -495,32 +640,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="editor-controls">
-          <div class="slider-row"><span>Preview scale</span><input v-model="previewScaleModel" type="range" min="25" max="300" /></div>
-          <div class="slider-row"><span>Temperature</span><input :value="editor.temperature" type="range" min="-100" max="100" @input="updateEditorNumberField('temperature', $event)" /></div>
-          <div class="slider-row"><span>Brightness</span><input :value="editor.brightness" type="range" min="-60" max="60" @input="updateEditorNumberField('brightness', $event)" /></div>
-          <div class="slider-row"><span>Contrast</span><input :value="editor.contrast" type="range" min="-60" max="60" @input="updateEditorNumberField('contrast', $event)" /></div>
-          <div class="slider-row"><span>Saturation</span><input :value="editor.saturation" type="range" min="-60" max="60" @input="updateEditorNumberField('saturation', $event)" /></div>
-          <div class="slider-row"><span>Tone depth</span><input :value="editor.toneDepth" type="range" min="-100" max="100" @input="updateEditorNumberField('toneDepth', $event)" /></div>
-          <div class="slider-row"><span>Shadows level</span><input :value="editor.shadowsLevel" type="range" min="-100" max="100" @input="updateEditorNumberField('shadowsLevel', $event)" /></div>
-          <div class="slider-row"><span>Highlights level</span><input :value="editor.highlightsLevel" type="range" min="-100" max="100" @input="updateEditorNumberField('highlightsLevel', $event)" /></div>
-          <div class="slider-row"><span>Sharpness</span><input :value="editor.sharpness" type="range" min="0" max="100" @input="updateEditorNumberField('sharpness', $event)" /></div>
-          <div class="slider-row"><span>Definition</span><input :value="editor.definition" type="range" min="-100" max="100" @input="updateEditorNumberField('definition', $event)" /></div>
-          <div class="slider-row"><span>Vignette</span><input :value="editor.vignette" type="range" min="0" max="100" @input="updateEditorNumberField('vignette', $event)" /></div>
-          <div class="slider-row"><span>Glamour</span><input :value="editor.glamour" type="range" min="0" max="100" @input="updateEditorNumberField('glamour', $event)" /></div>
-          <div class="slider-row"><span>Grayscale</span><input :value="editor.grayscale" type="range" min="0" max="100" @input="updateEditorNumberField('grayscale', $event)" /></div>
-          <div class="slider-row"><span>Sepia</span><input :value="editor.sepia" type="range" min="0" max="100" @input="updateEditorNumberField('sepia', $event)" /></div>
-          <div class="slider-row"><span>Crop zoom</span><input :value="editor.cropZoom" type="range" min="0" max="60" @input="updateEditorNumberField('cropZoom', $event)" /></div>
-          <div class="slider-row"><span>Rotate</span><input :value="editor.rotate" type="range" min="-180" max="180" step="90" @input="updateEditorNumberField('rotate', $event)" /></div>
-          <div class="slider-row switches">
-            <span>Mirror</span>
-            <div class="switch-group">
-              <label><input :checked="editor.flipX" type="checkbox" @change="updateEditorBooleanField('flipX', $event)" /> Horizontal</label>
-              <label><input :checked="editor.flipY" type="checkbox" @change="updateEditorBooleanField('flipY', $event)" /> Vertical</label>
-            </div>
-          </div>
-        </div>
-
         <div class="editor-actions">
           <button class="btn ghost" @click="emit('reset')">Reset</button>
           <button class="btn ghost" @click="emit('close')">Cancel</button>
@@ -533,6 +652,14 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="editor-mobile-panel">
+      <div class="editor-mobile-quick-recipes">
+        <button class="chip" type="button" @click="emit('applySmartAutoEnhance')">Smart Auto</button>
+        <button class="chip" type="button" @click="emit('applyQuickRecipe', 'peachy-clean')">Peachy</button>
+        <button class="chip" type="button" @click="emit('applyQuickRecipe', 'social-pop')">Pop</button>
+        <button class="chip" type="button" @click="emit('applyQuickRecipe', 'portrait-soft')">Portrait</button>
+        <button class="chip" type="button" @click="emit('applyQuickRecipe', 'cinematic')">Cine</button>
+      </div>
+
       <div class="editor-mobile-tabs">
         <button
           v-for="tab in editorMobileTabs"

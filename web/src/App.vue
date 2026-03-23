@@ -4421,6 +4421,85 @@ function applyEditorPreset(preset: 'auto' | 'portrait' | 'landscape' | 'night' |
   showToast(`Preset ${preset.toUpperCase()} applied`)
 }
 
+type QuickRecipeKey =
+  | 'peachy-clean'
+  | 'social-pop'
+  | 'cinematic'
+  | 'film-matte'
+  | 'sunset-glow'
+  | 'night-rescue'
+  | 'portrait-soft'
+  | 'bw-pro'
+
+function applyQuickRecipe(recipe: QuickRecipeKey) {
+  const apply = (values: Partial<Record<string, number>>) => {
+    for (const [key, value] of Object.entries(values)) {
+      if (typeof value !== 'number') continue
+      ;(editor as unknown as Record<string, number>)[key] = value
+    }
+  }
+
+  const recipes: Record<QuickRecipeKey, { label: string; values: Partial<Record<string, number>> }> = {
+    'peachy-clean': {
+      label: 'Peachy Clean',
+      values: { brightness: 8, contrast: 6, saturation: 6, highlightsLevel: 10, shadowsLevel: 8, glamour: 14, definition: 8 },
+    },
+    'social-pop': {
+      label: 'Social Pop',
+      values: { contrast: 16, saturation: 18, toneDepth: 10, sharpness: 14, definition: 16, vignette: 6 },
+    },
+    cinematic: {
+      label: 'Cinematic',
+      values: { temperature: -8, contrast: 14, saturation: -10, toneDepth: 18, highlightsLevel: -10, shadowsLevel: 10, vignette: 14 },
+    },
+    'film-matte': {
+      label: 'Film Matte',
+      values: { contrast: -6, toneDepth: -12, saturation: -8, shadowsLevel: 14, highlightsLevel: -6, sepia: 8, vignette: 10 },
+    },
+    'sunset-glow': {
+      label: 'Sunset Glow',
+      values: { temperature: 18, brightness: 10, saturation: 10, highlightsLevel: -8, glamour: 10, vignette: 8 },
+    },
+    'night-rescue': {
+      label: 'Night Rescue',
+      values: { brightness: 20, shadowsLevel: 24, highlightsLevel: -14, contrast: 8, definition: 14, sharpness: 10, saturation: 6 },
+    },
+    'portrait-soft': {
+      label: 'Portrait Soft',
+      values: { temperature: 10, brightness: 6, highlightsLevel: 8, shadowsLevel: 6, glamour: 18, sharpness: 6, saturation: 4 },
+    },
+    'bw-pro': {
+      label: 'BW Pro',
+      values: { grayscale: 100, contrast: 20, toneDepth: 12, sharpness: 14, definition: 10, vignette: 12, saturation: -50, sepia: 0 },
+    },
+  }
+
+  const config = recipes[recipe]
+  if (!config) return
+  apply(config.values)
+  scheduleEditorHistoryPush()
+  showToast(`${config.label} applied`)
+}
+
+function applySmartAutoEnhance() {
+  const clampValue = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+  const shadows = editorClipStats.shadows
+  const highlights = editorClipStats.highlights
+
+  const shadowLift = clampValue(Math.round((shadows - 1.6) * 5), -20, 28)
+  const highlightPull = clampValue(Math.round((highlights - 1.2) * 5), -20, 26)
+
+  editor.shadowsLevel = clampValue(editor.shadowsLevel + shadowLift, -100, 100)
+  editor.highlightsLevel = clampValue(editor.highlightsLevel - highlightPull, -100, 100)
+  editor.brightness = clampValue(editor.brightness + (shadows > 3 ? 6 : 2), -60, 60)
+  editor.contrast = clampValue(editor.contrast + (highlights > 3 ? 4 : 8), -60, 60)
+  editor.saturation = clampValue(editor.saturation + 5, -60, 60)
+  editor.definition = clampValue(editor.definition + 8, -100, 100)
+
+  scheduleEditorHistoryPush()
+  showToast('Smart auto enhance applied')
+}
+
 function setBeforeAfterActive(value: boolean) {
   beforeAfterActive.value = value
 }
@@ -6155,6 +6234,8 @@ onBeforeUnmount(() => {
         @undo="undoLastPermanentEdit"
         @apply="applyImageEditsPermanently"
         @apply-preset="applyEditorPreset"
+        @apply-quick-recipe="applyQuickRecipe"
+        @apply-smart-auto-enhance="applySmartAutoEnhance"
         @copy-edits="copyEditorEdits"
         @paste-edits="pasteEditorEdits"
         @undo-step="undoEditorStep"
