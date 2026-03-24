@@ -3288,6 +3288,111 @@ function finishUploadProgress() {
   }, 350)
 }
 
+const UPLOAD_BATCH_MAX_BYTES = 32 * 1024 * 1024
+
+function chunkUploadByTotalSize(
+  files: File[],
+  relativePaths: string[],
+  fileLastModifieds: number[],
+  maxBatchBytes = UPLOAD_BATCH_MAX_BYTES,
+) {
+  const batches: Array<{
+    files: File[]
+    relativePaths: string[]
+    fileLastModifieds: number[]
+    totalBytes: number
+  }> = []
+
+  let currentFiles: File[] = []
+  let currentRelativePaths: string[] = []
+  let currentLastModifieds: number[] = []
+  let currentTotalBytes = 0
+
+  const pushCurrentBatch = () => {
+    if (currentFiles.length === 0) return
+    batches.push({
+      files: currentFiles,
+      relativePaths: currentRelativePaths,
+      fileLastModifieds: currentLastModifieds,
+      totalBytes: currentTotalBytes,
+    })
+    currentFiles = []
+    currentRelativePaths = []
+    currentLastModifieds = []
+    currentTotalBytes = 0
+  }
+
+  files.forEach((file, index) => {
+    const fileBytes = Math.max(0, file.size || 0)
+    const wouldExceed = currentFiles.length > 0 && currentTotalBytes + fileBytes > maxBatchBytes
+    if (wouldExceed) {
+      pushCurrentBatch()
+    }
+
+    currentFiles.push(file)
+    currentRelativePaths.push(relativePaths[index] || file.name)
+    currentLastModifieds.push(fileLastModifieds[index] || file.lastModified)
+    currentTotalBytes += fileBytes
+
+    if (fileBytes >= maxBatchBytes) {
+      pushCurrentBatch()
+    }
+  })
+
+  pushCurrentBatch()
+  return batches
+}
+
+async function uploadFilesInBatches(
+  files: File[],
+  relativePaths: string[],
+  options?: {
+    albumId?: string
+    createAlbumsFromFolders?: boolean
+    fileLastModifieds?: number[]
+  },
+) {
+  const lastModifieds = options?.fileLastModifieds && options.fileLastModifieds.length === files.length
+    ? options.fileLastModifieds
+    : files.map((file) => file.lastModified)
+  const batches = chunkUploadByTotalSize(files, relativePaths, lastModifieds)
+  const totalBytes = files.reduce((sum, file) => sum + Math.max(0, file.size || 0), 0)
+
+  let completedBytes = 0
+  const createdAll: MediaItem[] = []
+
+  for (const batch of batches) {
+    const result = await api.uploadMedia(
+      authHeaders(),
+      batch.files,
+      batch.relativePaths,
+      {
+        ...options,
+        fileLastModifieds: batch.fileLastModifieds,
+      },
+      (loaded) => {
+        if (totalBytes <= 0) return
+        const loadedInBatch = Math.min(Math.max(0, loaded), batch.totalBytes)
+        updateUploadProgress(completedBytes + loadedInBatch, totalBytes)
+      },
+    )
+
+    if (Array.isArray(result.created) && result.created.length > 0) {
+      createdAll.push(...result.created)
+    }
+
+    completedBytes += batch.totalBytes
+    if (totalBytes > 0) {
+      updateUploadProgress(completedBytes, totalBytes)
+    }
+  }
+
+  return {
+    ok: true,
+    created: createdAll,
+  }
+}
+
 async function uploadFiles(files: FileList | null) {
   if (!files || files.length === 0 || !token.value) return
   const list = Array.from(files)
@@ -3299,10 +3404,10 @@ async function uploadFiles(files: FileList | null) {
     startUploadProgress(list.length)
     message.value = `Uploading ${list.length} files...`
 
-    const uploadResult = await api.uploadMedia(authHeaders(), list, relativePaths, {
+    const uploadResult = await uploadFilesInBatches(list, relativePaths, {
       albumId: activeAlbumId.value || undefined,
       fileLastModifieds: list.map((file) => file.lastModified),
-    }, updateUploadProgress)
+    })
     const created = uploadResult.created || []
     const createdCount = created.length > 0 ? created.length : list.length
     const createdSizeBytes = created.length > 0
@@ -3422,11 +3527,11 @@ async function handleDrop(event: DragEvent) {
     startUploadProgress(files.length)
     message.value = `Uploading ${files.length} files...`
 
-    const uploadResult = await api.uploadMedia(authHeaders(), files, relativePaths, {
+    const uploadResult = await uploadFilesInBatches(files, relativePaths, {
       albumId: activeAlbumId.value || undefined,
       createAlbumsFromFolders: hasFolders,
       fileLastModifieds: files.map((file) => file.lastModified),
-    }, updateUploadProgress)
+    })
     const created = uploadResult.created || []
     const createdCount = created.length > 0 ? created.length : files.length
     const createdSizeBytes = created.length > 0

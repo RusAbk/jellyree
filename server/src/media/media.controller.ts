@@ -53,6 +53,33 @@ function clampInteger(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+) {
+  if (items.length === 0) return [] as R[];
+
+  const safeConcurrency = Math.max(1, Math.floor(concurrency));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) return;
+      results[currentIndex] = await worker(items[currentIndex], currentIndex);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(safeConcurrency, items.length) }, () => runWorker()),
+  );
+
+  return results;
+}
+
 function normalizeExifDate(value: unknown): Date | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return value;
@@ -241,6 +268,11 @@ const r2AccountId = process.env.R2_ACCOUNT_ID || '';
 const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID || '';
 const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY || '';
 const r2BucketName = process.env.R2_BUCKET_NAME || '';
+const uploadProcessingConcurrency = clampInteger(
+  toNumber(process.env.UPLOAD_PROCESSING_CONCURRENCY, 3),
+  2,
+  4,
+);
 const r2Endpoint =
   process.env.R2_ENDPOINT ||
   (r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : '');
@@ -1266,17 +1298,20 @@ export class MediaController {
     const uploadedTotalSizeBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
     await this.ensureCanCreateFiles(ownerId, files.length, uploadedTotalSizeBytes);
 
-    const uploadMetadata = await Promise.all(
-      (files || []).map((file) => this.readUploadMetadata(file.filename, file.mimetype)),
+    const uploadMetadata = await mapWithConcurrency(
+      files || [],
+      uploadProcessingConcurrency,
+      (file) => this.readUploadMetadata(file.filename, file.mimetype),
     );
 
     const tempFilePaths = (files || []).map((file) => resolve(tempUploadRoot, file.filename));
 
     try {
-      await Promise.all(
-        (files || []).map((file, index) =>
+      await mapWithConcurrency(
+        files || [],
+        uploadProcessingConcurrency,
+        (file, index) =>
           this.uploadLocalFileToR2(ownerId, file.filename, file.mimetype, tempFilePaths[index]),
-        ),
       );
     } catch (error) {
       await Promise.all(tempFilePaths.map((path) => unlink(path).catch(() => undefined)));
@@ -1286,8 +1321,11 @@ export class MediaController {
     let created: Awaited<ReturnType<typeof this.prisma.media.create>>[] = [];
 
     try {
-      created = await this.prisma.$transaction(
-        (files || []).map((file, index) => {
+      created = await this.prisma.$transaction(async (tx) => {
+        const nextCreated: Awaited<ReturnType<typeof tx.media.create>>[] = [];
+
+        for (let index = 0; index < (files || []).length; index += 1) {
+          const file = files[index];
           const extracted = uploadMetadata[index];
           const clientLastModifiedAt = normalizeExifDate(fileLastModifieds[index]);
           const capturedAt =
@@ -1301,7 +1339,7 @@ export class MediaController {
             clientLastModifiedAt ??
             null;
 
-          return this.prisma.media.create({
+          const createdItem = await tx.media.create({
             data: {
               ownerId,
               filePath: file.filename,
@@ -1322,8 +1360,12 @@ export class MediaController {
               albumMedia: true,
             },
           });
-        }),
-      );
+
+          nextCreated.push(createdItem);
+        }
+
+        return nextCreated;
+      });
     } catch (error) {
       await Promise.all(
         (files || []).map((file) => this.deleteObjectFromR2(ownerId, file.filename).catch(() => undefined)),
