@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { api, type AccountStats, type AdminUserOverview, type Album, type MediaItem, type MeProfile, type Tag } from './api'
 import AlbumTreeSelect from './components/AlbumTreeSelect.vue'
 import PhotoEditorPanel from './components/PhotoEditorPanel.vue'
+import VideoPlayer from './components/VideoPlayer.vue'
 import { type EditorDeformationPayload, useEditorActions } from './composables/useEditorActions'
 import { useEditorPreview } from './composables/useEditorPreview'
 import { useEditorState } from './composables/useEditorState'
@@ -2955,6 +2956,10 @@ function openLightbox(mediaId: string) {
   mobileDetailsOpen.value = false
   selectMedia(mediaId)
   lightboxOpen.value = true
+}
+
+function onVideoScreenshotSaved(newItem: MediaItem) {
+  media.value.unshift(newItem)
 }
 
 async function scrollActiveMediaCardIntoView() {
@@ -6258,7 +6263,7 @@ onBeforeUnmount(() => {
         </div>
       </Transition>
 
-      <div v-if="lightboxOpen && activeMedia" class="overlay" @click.self="closeLightbox">
+      <div v-if="lightboxOpen && activeMedia && !isLikelyVideoFile(activeMedia)" class="overlay" @click.self="closeLightbox">
         <button v-if="lightboxItems.length > 1" class="overlay-arrow left" @click.stop="prevLightbox">‹</button>
 
         <div
@@ -6418,6 +6423,18 @@ onBeforeUnmount(() => {
 
         <button v-if="lightboxItems.length > 1" class="overlay-arrow right" @click.stop="nextLightbox">›</button>
       </div>
+
+      <VideoPlayer
+        v-if="lightboxOpen && activeMedia && isLikelyVideoFile(activeMedia)"
+        :item="activeMedia"
+        :token="token"
+        :has-prev="lightboxIndex > 0"
+        :has-next="lightboxIndex < lightboxItems.length - 1"
+        @close="closeLightbox"
+        @prev="prevLightbox"
+        @next="nextLightbox"
+        @screenshot-saved="onVideoScreenshotSaved"
+      />
 
       <PhotoEditorPanel
         :open="editModeOpen"

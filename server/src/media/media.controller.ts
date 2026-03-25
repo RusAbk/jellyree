@@ -18,7 +18,8 @@ import {
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { PrismaService } from '../prisma/prisma.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { JwtService } from '@nestjs/jwt';
+import { JwtAuthGuard, Public } from '../auth/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/jwt-auth.guard';
 import { diskStorage } from 'multer';
 import { extname, join, resolve } from 'path';
@@ -334,7 +335,10 @@ const videoUploadSessionStore = getVideoUploadSessionStore();
 @UseGuards(JwtAuthGuard)
 @Controller('media')
 export class MediaController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+  ) {}
 
   private r2Client: S3Client | null = null;
 
@@ -2109,6 +2113,155 @@ export class MediaController {
     } catch {
       return response.status(404).json({ error: 'File not found in storage' });
     }
+  }
+
+  /**
+   * Streaming video endpoint — accepts JWT via query param so <video src> can use it directly.
+   * Supports HTTP Range requests for seeking.
+   */
+  @Public()
+  @Get(':id/stream')
+  async stream(
+    @Param('id') id: string,
+    @Query('token') tokenQuery: string | undefined,
+    @Req() req: Request & { headers: Record<string, string | string[] | undefined> },
+    @Res() response: Response,
+  ) {
+    if (!tokenQuery) {
+      return response.status(401).json({ error: 'Missing token' });
+    }
+
+    let userId: string;
+    try {
+      const payload = await this.jwtService.verifyAsync<{ sub: string }>(tokenQuery);
+      userId = payload.sub;
+    } catch {
+      return response.status(401).json({ error: 'Invalid token' });
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, isFrozen: true, deletedAt: true },
+    });
+    if (!user || user.deletedAt || user.isFrozen) {
+      return response.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const media = await this.prisma.media.findFirst({ where: { id, ownerId: userId } });
+    if (!media) return response.status(404).json({ error: 'Not found' });
+
+    const rangeHeader = req.headers['range'] as string | undefined;
+    const client = this.getR2Client();
+    const key = this.objectKey(userId, media.filePath);
+    const legacyKey = media.filePath.replace(/^\/+/, '');
+
+    const tryGetObject = async (k: string) => {
+      return client.send(
+        new GetObjectCommand({
+          Bucket: r2BucketName,
+          Key: k,
+          ...(rangeHeader ? { Range: rangeHeader } : {}),
+        }),
+      );
+    };
+
+    try {
+      let object;
+      try {
+        object = await tryGetObject(key);
+      } catch (err) {
+        const code = (err as { Code?: string; name?: string })?.Code ?? (err as { Code?: string; name?: string })?.name;
+        if ((code === 'NoSuchKey' || code === 'NotFound') && legacyKey !== key) {
+          object = await tryGetObject(legacyKey);
+        } else {
+          throw err;
+        }
+      }
+
+      if (!object.Body) return response.status(404).json({ error: 'File not found in storage' });
+
+      response.setHeader('Accept-Ranges', 'bytes');
+      response.setHeader('Content-Type', media.mimeType || 'video/mp4');
+      if (typeof object.ContentLength === 'number') {
+        response.setHeader('Content-Length', String(object.ContentLength));
+      }
+      if (object.ContentRange) {
+        response.setHeader('Content-Range', object.ContentRange);
+      }
+      response.status(rangeHeader ? 206 : 200);
+
+      const body = object.Body as AsyncIterable<Uint8Array | Buffer>;
+      for await (const chunk of body) {
+        const ok = response.write(chunk instanceof Buffer ? chunk : Buffer.from(chunk));
+        if (!ok) await new Promise<void>((r) => response.once('drain', r));
+      }
+      response.end();
+    } catch (err) {
+      if (!response.headersSent) {
+        response.status(500).json({ error: 'Stream failed' });
+      }
+    }
+  }
+
+  /**
+   * Save a video screenshot (canvas dataURL) as a new media item in the gallery.
+   */
+  @Post(':id/screenshot')
+  async saveScreenshot(
+    @Req() req: RequestWithUser,
+    @Param('id') id: string,
+    @Body() body: { dataUrl?: string },
+    @Res() response: Response,
+  ) {
+    const media = await this.prisma.media.findFirst({
+      where: { id, ownerId: req.user!.id },
+    });
+    if (!media) return response.status(404).json({ error: 'Not found' });
+
+    const { dataUrl } = body;
+    if (!dataUrl || typeof dataUrl !== 'string') {
+      return response.status(400).json({ error: 'dataUrl is required' });
+    }
+
+    const match = dataUrl.match(/^data:(image\/[\w+.-]+);base64,(.+)$/s);
+    if (!match) return response.status(400).json({ error: 'Invalid data URL' });
+
+    const mimeType = match[1];
+    const rawExt = mimeType.split('/')[1] ?? 'png';
+    const ext = rawExt.replace(/[^a-z0-9]/g, '') || 'png';
+    const buffer = Buffer.from(match[2], 'base64');
+
+    const videoExt = extname(media.filename);
+    const videoBase = videoExt ? media.filename.slice(0, -videoExt.length) : media.filename;
+    const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/:/g, '-');
+    const screenshotFilename = `Screenshot from ${videoBase} at ${ts}.${ext}`;
+    const filePath = `${randomUUID()}.${ext}`;
+
+    const meta = await sharp(buffer).metadata();
+    const width = meta.width ?? null;
+    const height = meta.height ?? null;
+
+    await this.uploadBufferToR2(req.user!.id, filePath, mimeType, buffer);
+
+    const newMedia = await this.prisma.media.create({
+      data: {
+        ownerId: req.user!.id,
+        filePath,
+        filename: screenshotFilename,
+        mimeType,
+        sizeBytes: buffer.length,
+        width,
+        height,
+      },
+      include: {
+        mediaTags: { include: { tag: true } },
+        albumMedia: true,
+      },
+    });
+
+    void this.warmThumbCacheAsync(req.user!.id, newMedia.id, filePath, mimeType, newMedia.updatedAt);
+
+    return response.json(newMedia);
   }
 
   @Get(':id/thumb')

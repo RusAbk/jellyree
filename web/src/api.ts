@@ -767,4 +767,16 @@ export const api = {
       filename,
     }
   },
+  saveVideoScreenshot: async (token: string, mediaId: string, dataUrl: string): Promise<MediaItem> => {
+    const response = await fetch(`${API_BASE}/media/${mediaId}/screenshot`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ dataUrl }),
+    })
+    if (!response.ok) throw new Error('Screenshot save failed')
+    return response.json() as Promise<MediaItem>
+  },
 }
