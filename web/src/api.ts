@@ -211,6 +211,40 @@ export const api = {
     ),
   adminArchiveMedia: (token: string) =>
     request<MediaItem[]>('/media/admin/archive', { method: 'GET' }, token),
+  adminBackfillThumbs: async (
+    token: string,
+    videosOnly: boolean,
+    onProgress: (p: { total: number; done: number; skipped: number; errors: number; finished?: boolean }) => void,
+  ) => {
+    const url = `${API_BASE}/media/admin/backfill-thumbs${videosOnly ? '?videosOnly=1' : ''}`
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok || !response.body) {
+      throw new Error('Backfill request failed')
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const parsed = JSON.parse(trimmed)
+          if (typeof parsed.total === 'number') onProgress(parsed)
+        } catch {
+          // ignore malformed lines
+        }
+      }
+    }
+  },
   fetchAdminArchiveFileBlob: async (token: string, mediaId: string) => {
     const response = await fetch(`${API_BASE}/media/admin/archive/${encodeURIComponent(mediaId)}/file`, {
       headers: {

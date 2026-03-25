@@ -93,6 +93,8 @@ const adminUsers = ref<AdminUserOverview[]>([])
 const adminDraftLimits = ref<Record<string, { maxTotalSizeBytes: string; maxFileCount: string; maxAlbumCount: string }>>({})
 const adminArchiveLoading = ref(false)
 const adminArchiveMedia = ref<MediaItem[]>([])
+const adminBackfillRunning = ref(false)
+const adminBackfillProgress = ref<{ total: number; done: number; skipped: number; errors: number; finished?: boolean } | null>(null)
 const routeMode = ref<'app' | 'public-media' | 'public-album'>('app')
 const routeToken = ref('')
 const routeAlbumId = ref<string | null>(null)
@@ -1336,6 +1338,21 @@ async function refreshAdminArchiveMedia() {
     message.value = (error as Error).message
   } finally {
     adminArchiveLoading.value = false
+  }
+}
+
+async function startBackfillThumbs(videosOnly: boolean) {
+  if (!token.value || adminBackfillRunning.value) return
+  adminBackfillRunning.value = true
+  adminBackfillProgress.value = null
+  try {
+    await api.adminBackfillThumbs(token.value, videosOnly, (p) => {
+      adminBackfillProgress.value = p
+    })
+  } catch (error) {
+    message.value = (error as Error).message
+  } finally {
+    adminBackfillRunning.value = false
   }
 }
 
@@ -6573,6 +6590,34 @@ onBeforeUnmount(() => {
                   <button class="chip" @click="downloadArchivedMedia(item)">Download</button>
                 </div>
                 <div v-if="adminArchiveMedia.length === 0" class="muted">Archive is empty</div>
+              </div>
+            </article>
+
+            <article class="account-card">
+              <div class="account-card-label">Backfill missing thumbnails</div>
+              <div class="muted">Generate thumbnails for files that don't have a cached preview yet. Videos require ffmpeg. Runs in the background on the server — watch progress below.</div>
+              <div class="row-actions">
+                <button class="btn" :disabled="adminBackfillRunning" @click="startBackfillThumbs(false)">
+                  {{ adminBackfillRunning ? 'Running...' : 'All files' }}
+                </button>
+                <button class="btn ghost" :disabled="adminBackfillRunning" @click="startBackfillThumbs(true)">
+                  Videos only
+                </button>
+              </div>
+              <div v-if="adminBackfillProgress" class="admin-backfill-progress">
+                <div class="admin-backfill-bar-wrap">
+                  <div
+                    class="admin-backfill-bar-fill"
+                    :style="{ width: adminBackfillProgress.total > 0 ? ((adminBackfillProgress.done + adminBackfillProgress.skipped) / adminBackfillProgress.total * 100).toFixed(1) + '%' : '0%' }"
+                  ></div>
+                </div>
+                <div class="muted">
+                  {{ adminBackfillProgress.done + adminBackfillProgress.skipped }} / {{ adminBackfillProgress.total }}
+                  &nbsp;·&nbsp; generated: {{ adminBackfillProgress.done }}
+                  &nbsp;·&nbsp; already cached: {{ adminBackfillProgress.skipped }}
+                  <template v-if="adminBackfillProgress.errors > 0">&nbsp;·&nbsp; errors: {{ adminBackfillProgress.errors }}</template>
+                  <template v-if="adminBackfillProgress.finished">&nbsp;·&nbsp; ✓ Done</template>
+                </div>
               </div>
             </article>
           </div>

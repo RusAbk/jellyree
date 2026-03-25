@@ -1936,6 +1936,94 @@ export class MediaController {
     }
   }
 
+  @Post('admin/backfill-thumbs')
+  async backfillThumbs(
+    @Req() req: RequestWithUser,
+    @Query('videosOnly') videosOnly: string | undefined,
+    @Res() response: Response,
+  ) {
+    await this.ensureAdminAccess(req.user!.id);
+
+    const onlyVideos = videosOnly === '1' || videosOnly === 'true';
+
+    // Fetch all matching media rows (no archived)
+    const allMedia = await this.prisma.media.findMany({
+      where: {
+        isArchived: false,
+        ...(onlyVideos ? { mimeType: { startsWith: 'video/' } } : {}),
+      },
+      select: {
+        id: true,
+        ownerId: true,
+        filePath: true,
+        mimeType: true,
+        updatedAt: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const total = allMedia.length;
+
+    // Stream JSON-lines progress to client
+    response.setHeader('Content-Type', 'application/x-ndjson');
+    response.setHeader('Cache-Control', 'no-cache');
+    response.setHeader('Transfer-Encoding', 'chunked');
+    response.flushHeaders();
+
+    const write = (obj: object) => {
+      try {
+        response.write(JSON.stringify(obj) + '\n');
+      } catch {
+        // client disconnected
+      }
+    };
+
+    write({ total, done: 0, skipped: 0, errors: 0 });
+
+    let done = 0;
+    let skipped = 0;
+    let errors = 0;
+    const thumbWidth = 640;
+
+    for (const media of allMedia) {
+      try {
+        const thumbPath = `thumbs/${media.id}_${media.updatedAt.getTime()}_${thumbWidth}.webp`;
+        // check cache existence
+        let exists = false;
+        try {
+          const cached = await this.getObjectFromR2(media.ownerId, thumbPath);
+          exists = Boolean(cached.Body);
+        } catch {
+          exists = false;
+        }
+
+        if (exists) {
+          skipped++;
+        } else {
+          const rawBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+          const sourceBuffer = media.mimeType.startsWith('video/')
+            ? await extractVideoFrame(rawBuffer)
+            : rawBuffer;
+          const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
+            .rotate()
+            .resize({ width: thumbWidth, fit: 'inside', withoutEnlargement: true })
+            .webp({ quality: 80, effort: 4 })
+            .toBuffer();
+          await this.uploadBufferToR2(media.ownerId, thumbPath, 'image/webp', thumbBuffer);
+          done++;
+        }
+      } catch (err) {
+        errors++;
+        write({ error: String(err), mediaId: media.id });
+      }
+
+      write({ total, done, skipped, errors });
+    }
+
+    write({ finished: true, total, done, skipped, errors });
+    response.end();
+  }
+
   @Get(':id/file')
   async file(
     @Req() req: RequestWithUser,
