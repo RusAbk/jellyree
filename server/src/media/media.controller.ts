@@ -65,6 +65,14 @@ async function extractVideoFrameFromPath(videoPath: string): Promise<Buffer> {
   }
 }
 
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'webm', 'mkv', 'm4v', 'wmv', '3gp', 'flv', 'ts', 'mts']);
+
+function isVideoFile(mimeType: string, filename: string): boolean {
+  if (mimeType.startsWith('video/')) return true;
+  const ext = extname(filename).replace(/^\./, '').toLowerCase();
+  return VIDEO_EXTENSIONS.has(ext);
+}
+
 function toNumber(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -506,7 +514,7 @@ export class MediaController {
     try {
       const thumbPath = `thumbs/${mediaId}_${updatedAt.getTime()}_${thumbWidth}.webp`;
       let sourceBuffer: Buffer;
-      if (mimeType.startsWith('video/')) {
+      if (isVideoFile(mimeType, filePath)) {
         // Stream video to a temp file — never load full video into RAM (OOM risk for large files)
         const tmpVidPath = join(tmpdir(), `jry_warm_${randomUUID()}${extname(filePath) || '.mp4'}`);
         try {
@@ -1710,7 +1718,7 @@ export class MediaController {
     if (!filename) {
       throw new BadRequestException('filename is required');
     }
-    if (!mimeType.startsWith('video/')) {
+    if (!mimeType.startsWith('video/') && !isVideoFile(mimeType, filename)) {
       throw new BadRequestException('Only video mime types are allowed for resumable upload');
     }
     if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
@@ -2041,7 +2049,7 @@ export class MediaController {
           skipped++;
         } else {
           let sourceBuffer: Buffer;
-          if (media.mimeType.startsWith('video/')) {
+          if (isVideoFile(media.mimeType, media.filePath)) {
             const tmpVidPath = join(tmpdir(), `jry_backfill_${randomUUID()}${extname(media.filePath) || '.mp4'}`);
             try {
               await this.streamR2ObjectToFile(media.ownerId, media.filePath, tmpVidPath);
@@ -2145,7 +2153,7 @@ export class MediaController {
 
     try {
       let sourceBuffer: Buffer;
-      if (media.mimeType.startsWith('video/')) {
+      if (isVideoFile(media.mimeType, media.filePath)) {
         const tmpVidPath = join(tmpdir(), `jry_thumb_${randomUUID()}${extname(media.filePath) || '.mp4'}`);
         try {
           await this.streamR2ObjectToFile(media.ownerId, media.filePath, tmpVidPath);

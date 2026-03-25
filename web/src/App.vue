@@ -3390,7 +3390,10 @@ async function uploadFilesInBatches(
   files.forEach((file, index) => {
     const relativePath = relativePaths[index] || file.name
     const lastModified = lastModifieds[index] || file.lastModified
-    if ((file.type || '').toLowerCase().startsWith('video/')) {
+    const mime = (file.type || '').toLowerCase()
+    const fileExt = (file.name.split('.').pop() || '').toLowerCase()
+    const isVideo = mime.startsWith('video/') || ['mp4', 'mov', 'avi', 'webm', 'mkv', 'm4v', 'wmv', '3gp', 'flv', 'ts', 'mts'].includes(fileExt)
+    if (isVideo) {
       videoEntries.push({ file, relativePath, lastModified })
       return
     }
