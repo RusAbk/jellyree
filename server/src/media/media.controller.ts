@@ -49,22 +49,18 @@ import { tmpdir } from 'os';
 
 const execFileAsync = promisify(execFile);
 
-async function extractVideoFrame(videoBuffer: Buffer, ext: string): Promise<Buffer> {
+async function extractVideoFrameFromPath(videoPath: string): Promise<Buffer> {
   const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
-  const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
-  const tmpId = randomUUID();
-  const tmpIn = join(tmpdir(), `jry_vid_${tmpId}${safeExt}`);
-  const tmpOut = join(tmpdir(), `jry_vid_${tmpId}.png`);
-  await writeFile(tmpIn, videoBuffer);
+  const tmpOut = join(tmpdir(), `jry_frame_${randomUUID()}.png`);
   try {
-    await execFileAsync(ffmpegPath, ['-ss', '00:00:01', '-i', tmpIn, '-frames:v', '1', '-f', 'image2', '-y', tmpOut]);
-    return await readFile(tmpOut);
-  } catch {
-    // retry from start if seek past end (very short video)
-    await execFileAsync(ffmpegPath, ['-i', tmpIn, '-frames:v', '1', '-f', 'image2', '-y', tmpOut]);
+    try {
+      await execFileAsync(ffmpegPath, ['-ss', '00:00:01', '-i', videoPath, '-frames:v', '1', '-f', 'image2', '-y', tmpOut], { timeout: 30000 });
+    } catch {
+      // retry without seek (short video or seek-past-end)
+      await execFileAsync(ffmpegPath, ['-i', videoPath, '-frames:v', '1', '-f', 'image2', '-y', tmpOut], { timeout: 30000 });
+    }
     return await readFile(tmpOut);
   } finally {
-    await unlink(tmpIn).catch(() => {});
     await unlink(tmpOut).catch(() => {});
   }
 }
@@ -476,6 +472,29 @@ export class MediaController {
     );
   }
 
+  // Stream an R2 object directly to a local file (no in-memory buffer — safe for large files)
+  private async streamR2ObjectToFile(ownerId: string, relativePath: string, destPath: string): Promise<void> {
+    const object = await this.getObjectFromR2(ownerId, relativePath);
+    if (!object.Body) throw new BadRequestException('Stored file is empty');
+    const ws = createWriteStream(destPath);
+    const body = object.Body as AsyncIterable<Uint8Array | Buffer>;
+    try {
+      for await (const chunk of body) {
+        const buf = chunk instanceof Buffer ? chunk : Buffer.from(chunk);
+        const canContinue = ws.write(buf);
+        if (!canContinue) {
+          await new Promise<void>((res) => ws.once('drain', res));
+        }
+      }
+    } finally {
+      await new Promise<void>((res, rej) => {
+        ws.end();
+        ws.on('finish', res);
+        ws.on('error', rej);
+      });
+    }
+  }
+
   private async warmThumbCacheAsync(
     ownerId: string,
     mediaId: string,
@@ -486,10 +505,19 @@ export class MediaController {
   ): Promise<void> {
     try {
       const thumbPath = `thumbs/${mediaId}_${updatedAt.getTime()}_${thumbWidth}.webp`;
-      const rawBuffer = await this.getObjectBufferFromR2(ownerId, filePath);
-      const sourceBuffer = mimeType.startsWith('video/')
-        ? await extractVideoFrame(rawBuffer, extname(filePath) || '.mp4')
-        : rawBuffer;
+      let sourceBuffer: Buffer;
+      if (mimeType.startsWith('video/')) {
+        // Stream video to a temp file — never load full video into RAM (OOM risk for large files)
+        const tmpVidPath = join(tmpdir(), `jry_warm_${randomUUID()}${extname(filePath) || '.mp4'}`);
+        try {
+          await this.streamR2ObjectToFile(ownerId, filePath, tmpVidPath);
+          sourceBuffer = await extractVideoFrameFromPath(tmpVidPath);
+        } finally {
+          await unlink(tmpVidPath).catch(() => {});
+        }
+      } else {
+        sourceBuffer = await this.getObjectBufferFromR2(ownerId, filePath);
+      }
       const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
         .rotate()
         .resize({ width: thumbWidth, fit: 'inside', withoutEnlargement: true })
@@ -1866,6 +1894,10 @@ export class MediaController {
       }
 
       await videoUploadSessionStore.remove(uploadId);
+
+      // Extract video frame from local temp file BEFORE deletion (avoids re-downloading from R2)
+      const videoFrameBuffer = await extractVideoFrameFromPath(tempPath).catch(() => null);
+
       await unlink(tempPath).catch(() => undefined);
 
       const reloaded = await this.prisma.media.findUnique({
@@ -1876,15 +1908,18 @@ export class MediaController {
         },
       });
 
-      // warm thumbnail cache in background (fire-and-forget)
+      // Upload thumbnail from extracted frame (fire-and-forget: frame is already in RAM, no large file access)
       const thumbSource = reloaded ?? created;
-      this.warmThumbCacheAsync(
-        thumbSource.ownerId,
-        thumbSource.id,
-        thumbSource.filePath,
-        thumbSource.mimeType,
-        thumbSource.updatedAt,
-      ).catch(() => {});
+      if (videoFrameBuffer) {
+        const thumbPath = `thumbs/${thumbSource.id}_${thumbSource.updatedAt.getTime()}_640.webp`;
+        sharp(videoFrameBuffer, { failOn: 'none' })
+          .rotate()
+          .resize({ width: 640, fit: 'inside', withoutEnlargement: true })
+          .webp({ quality: 80, effort: 4 })
+          .toBuffer()
+          .then((buf) => this.uploadBufferToR2(thumbSource.ownerId, thumbPath, 'image/webp', buf))
+          .catch(() => {});
+      }
 
       return {
         ok: true,
@@ -2005,10 +2040,18 @@ export class MediaController {
         if (exists) {
           skipped++;
         } else {
-          const rawBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
-          const sourceBuffer = media.mimeType.startsWith('video/')
-            ? await extractVideoFrame(rawBuffer, extname(media.filePath) || '.mp4')
-            : rawBuffer;
+          let sourceBuffer: Buffer;
+          if (media.mimeType.startsWith('video/')) {
+            const tmpVidPath = join(tmpdir(), `jry_backfill_${randomUUID()}${extname(media.filePath) || '.mp4'}`);
+            try {
+              await this.streamR2ObjectToFile(media.ownerId, media.filePath, tmpVidPath);
+              sourceBuffer = await extractVideoFrameFromPath(tmpVidPath);
+            } finally {
+              await unlink(tmpVidPath).catch(() => {});
+            }
+          } else {
+            sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+          }
           const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
             .rotate()
             .resize({ width: thumbWidth, fit: 'inside', withoutEnlargement: true })
@@ -2101,10 +2144,18 @@ export class MediaController {
     }
 
     try {
-      const rawBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
-      const sourceBuffer = media.mimeType.startsWith('video/')
-        ? await extractVideoFrame(rawBuffer, extname(media.filePath) || '.mp4')
-        : rawBuffer;
+      let sourceBuffer: Buffer;
+      if (media.mimeType.startsWith('video/')) {
+        const tmpVidPath = join(tmpdir(), `jry_thumb_${randomUUID()}${extname(media.filePath) || '.mp4'}`);
+        try {
+          await this.streamR2ObjectToFile(media.ownerId, media.filePath, tmpVidPath);
+          sourceBuffer = await extractVideoFrameFromPath(tmpVidPath);
+        } finally {
+          await unlink(tmpVidPath).catch(() => {});
+        }
+      } else {
+        sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+      }
       const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
         .rotate()
         .resize({
