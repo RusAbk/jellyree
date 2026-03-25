@@ -60,7 +60,8 @@ async function bootstrap() {
     },
     credentials: corsCredentials,
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Start-Byte'],
+    exposedHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges'],
     optionsSuccessStatus: 204,
   });
   await app.listen(process.env.PORT ?? 3000);
