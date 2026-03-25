@@ -169,8 +169,9 @@ function changeVolume(delta: number) {
 function changeSpeed(delta: number) {
   const idx = SPEEDS.indexOf(speed.value)
   const nextIdx = Math.min(SPEEDS.length - 1, Math.max(0, idx + delta))
-  speed.value = SPEEDS[nextIdx]
-  if (videoRef.value) videoRef.value.playbackRate = SPEEDS[nextIdx]
+  const nextSpeed = SPEEDS[nextIdx] ?? speed.value
+  speed.value = nextSpeed
+  if (videoRef.value) videoRef.value.playbackRate = nextSpeed
 }
 
 function seekBy(seconds: number) {
