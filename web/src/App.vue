@@ -2174,7 +2174,15 @@ function isLikelyImageFile(item: MediaItem) {
   return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'heif', 'avif'].includes(ext)
 }
 
+function isLikelyVideoFile(item: MediaItem) {
+  const mime = item.mimeType.toLowerCase()
+  if (mime.startsWith('video/')) return true
+  const ext = getFileExtension(item.filename)
+  return ['mp4', 'mov', 'avi', 'webm', 'mkv', 'm4v', 'wmv'].includes(ext)
+}
+
 function canPreviewInBrowser(item: MediaItem) {
+  if (isLikelyVideoFile(item)) return Boolean(thumbs.value[item.id])
   if (!isLikelyImageFile(item)) return false
   if (isHeicFile(item)) {
     return Boolean(thumbs.value[item.id])
@@ -5855,6 +5863,7 @@ onBeforeUnmount(() => {
                   <div v-else class="photo-fallback">
                     {{ formatFileExtension(item.filename) }}
                   </div>
+                  <div v-if="isLikelyVideoFile(item)" class="video-play-overlay">▶</div>
                 </div>
                 <div class="file-tile-meta">
                   <div class="file-tile-name" :title="item.filename">{{ item.filename }}</div>
@@ -5933,6 +5942,7 @@ onBeforeUnmount(() => {
                   <div v-else class="photo-fallback">
                     {{ item.mimeType }}
                   </div>
+                  <div v-if="isLikelyVideoFile(item)" class="video-play-overlay">▶</div>
                   <div
                     v-if="item.mediaTags.length > 0"
                     class="photo-card-tags"

@@ -21,11 +21,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/jwt-auth.guard';
 import { diskStorage } from 'multer';
-import { extname, resolve } from 'path';
+import { extname, join, resolve } from 'path';
 import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import type { Response } from 'express';
-import { stat, unlink } from 'fs/promises';
+import { readFile, stat, unlink, writeFile } from 'fs/promises';
 import * as bcrypt from 'bcrypt';
 import sharp from 'sharp';
 import { Prisma, ShareAccessMode, ShareResourceType } from '@prisma/client';
@@ -43,6 +43,26 @@ import {
   getVideoUploadSessionStore,
   type VideoUploadSessionData,
 } from './video-upload-session-store';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { tmpdir } from 'os';
+
+const execFileAsync = promisify(execFile);
+
+async function extractVideoFrame(videoBuffer: Buffer): Promise<Buffer> {
+  const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
+  const tmpId = randomUUID();
+  const tmpIn = join(tmpdir(), `jry_vid_${tmpId}`);
+  const tmpOut = join(tmpdir(), `jry_vid_${tmpId}.png`);
+  await writeFile(tmpIn, videoBuffer);
+  try {
+    await execFileAsync(ffmpegPath, ['-i', tmpIn, '-frames:v', '1', '-f', 'image2', '-y', tmpOut]);
+    return await readFile(tmpOut);
+  } finally {
+    await unlink(tmpIn).catch(() => {});
+    await unlink(tmpOut).catch(() => {});
+  }
+}
 
 function toNumber(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -1948,7 +1968,10 @@ export class MediaController {
     }
 
     try {
-      const sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+      const rawBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+      const sourceBuffer = media.mimeType.startsWith('video/')
+        ? await extractVideoFrame(rawBuffer)
+        : rawBuffer;
       const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
         .rotate()
         .resize({

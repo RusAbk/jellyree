@@ -922,6 +922,22 @@ body {
   justify-content: center;
   padding: 6px;
   overflow: hidden;
+  position: relative;
+}
+
+.video-play-overlay {
+  position: absolute;
+  bottom: 7px;
+  left: 7px;
+  background: rgba(0, 0, 0, 0.52);
+  color: #fff;
+  border-radius: 6px;
+  padding: 2px 8px 2px 7px;
+  font-size: 11px;
+  line-height: 1.7;
+  pointer-events: none;
+  z-index: 2;
+  letter-spacing: 0.03em;
 }
 
 .file-tile-preview .photo-img {
