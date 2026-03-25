@@ -471,6 +471,31 @@ export class MediaController {
     );
   }
 
+  private async warmThumbCacheAsync(
+    ownerId: string,
+    mediaId: string,
+    filePath: string,
+    mimeType: string,
+    updatedAt: Date,
+    thumbWidth = 640,
+  ): Promise<void> {
+    try {
+      const thumbPath = `thumbs/${mediaId}_${updatedAt.getTime()}_${thumbWidth}.webp`;
+      const rawBuffer = await this.getObjectBufferFromR2(ownerId, filePath);
+      const sourceBuffer = mimeType.startsWith('video/')
+        ? await extractVideoFrame(rawBuffer)
+        : rawBuffer;
+      const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
+        .rotate()
+        .resize({ width: thumbWidth, fit: 'inside', withoutEnlargement: true })
+        .webp({ quality: 80, effort: 4 })
+        .toBuffer();
+      await this.uploadBufferToR2(ownerId, thumbPath, 'image/webp', thumbBuffer);
+    } catch {
+      // best-effort: thumb will be generated on first request if this fails
+    }
+  }
+
   private async ensureCanCreateFiles(ownerId: string, fileCountDelta: number, sizeDeltaBytes: number) {
     if (fileCountDelta <= 0 && sizeDeltaBytes <= 0) return;
 
@@ -1554,6 +1579,11 @@ export class MediaController {
 
     await Promise.all(tempFilePaths.map((path) => unlink(path).catch(() => undefined)));
 
+    // warm thumbnail cache in background (fire-and-forget)
+    for (const item of created) {
+      this.warmThumbCacheAsync(item.ownerId, item.id, item.filePath, item.mimeType, item.updatedAt).catch(() => {});
+    }
+
     if (createAlbumsFromFolders && created.length > 0) {
       const albumCache = new Map<string, string>();
 
@@ -1840,6 +1870,16 @@ export class MediaController {
           albumMedia: true,
         },
       });
+
+      // warm thumbnail cache in background (fire-and-forget)
+      const thumbSource = reloaded ?? created;
+      this.warmThumbCacheAsync(
+        thumbSource.ownerId,
+        thumbSource.id,
+        thumbSource.filePath,
+        thumbSource.mimeType,
+        thumbSource.updatedAt,
+      ).catch(() => {});
 
       return {
         ok: true,
