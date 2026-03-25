@@ -114,20 +114,13 @@ async function takeScreenshot() {
   const v = videoRef.value
   if (!v || screenshotSaving.value) return
 
-  const canvas = document.createElement('canvas')
-  canvas.width = v.videoWidth
-  canvas.height = v.videoHeight
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-  ctx.drawImage(v, 0, 0)
-  // JPEG is much smaller than PNG (5-10x) which matters for large video frames
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
+  const timestamp = v.currentTime
 
   screenshotSaving.value = true
   screenshotDone.value = false
   screenshotError.value = false
   try {
-    const newItem = await api.saveVideoScreenshot(props.token, props.item.id, dataUrl)
+    const newItem = await api.saveVideoScreenshot(props.token, props.item.id, timestamp)
     emit('screenshot-saved', newItem)
     screenshotDone.value = true
     setTimeout(() => {

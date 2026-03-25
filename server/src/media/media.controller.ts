@@ -65,6 +65,26 @@ async function extractVideoFrameFromPath(videoPath: string): Promise<Buffer> {
   }
 }
 
+/**
+ * Extract a single JPEG frame from a video at an exact timestamp (seconds).
+ * Uses fast input-seek for speed; output is full-resolution JPEG (q:v 2 = highest quality).
+ */
+async function extractVideoFrameAtTimestamp(videoPath: string, timestamp: number): Promise<Buffer> {
+  const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
+  const tmpOut = join(tmpdir(), `jry_shot_${randomUUID()}.jpg`);
+  const ss = Math.max(0, timestamp).toFixed(3);
+  try {
+    await execFileAsync(
+      ffmpegPath,
+      ['-ss', ss, '-i', videoPath, '-frames:v', '1', '-q:v', '2', '-f', 'image2', '-y', tmpOut],
+      { timeout: 60000 },
+    );
+    return await readFile(tmpOut);
+  } finally {
+    await unlink(tmpOut).catch(() => {});
+  }
+}
+
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'webm', 'mkv', 'm4v', 'wmv', '3gp', 'flv', 'ts', 'mts']);
 
 function isVideoFile(mimeType: string, filename: string): boolean {
@@ -2183,13 +2203,14 @@ export class MediaController {
   }
 
   /**
-   * Save a video screenshot (canvas dataURL) as a new media item in the gallery.
+   * Extract a frame from a video at the given timestamp (seconds) using ffmpeg
+   * and save it as a new media item in the gallery.
    */
   @Post(':id/screenshot')
   async saveScreenshot(
     @Req() req: RequestWithUser,
     @Param('id') id: string,
-    @Body() body: { dataUrl?: string },
+    @Body() body: { timestamp?: number },
     @Res() response: Response,
   ) {
     const media = await this.prisma.media.findFirst({
@@ -2197,30 +2218,43 @@ export class MediaController {
     });
     if (!media) return response.status(404).json({ error: 'Not found' });
 
-    const { dataUrl } = body;
-    if (!dataUrl || typeof dataUrl !== 'string') {
-      return response.status(400).json({ error: 'dataUrl is required' });
+    if (!isVideoFile(media.mimeType, media.filePath)) {
+      return response.status(400).json({ error: 'Media is not a video' });
     }
 
-    const match = dataUrl.match(/^data:(image\/[\w+.-]+);base64,(.+)$/s);
-    if (!match) return response.status(400).json({ error: 'Invalid data URL' });
+    const rawTs = Number(body.timestamp);
+    const timestamp = Number.isFinite(rawTs) && rawTs >= 0 ? rawTs : 0;
 
-    const mimeType = match[1];
-    const rawExt = mimeType.split('/')[1] ?? 'png';
-    const ext = rawExt.replace(/[^a-z0-9]/g, '') || 'png';
-    const buffer = Buffer.from(match[2], 'base64');
+    // Download video to a temp file and extract the frame with ffmpeg
+    const tmpVidPath = join(tmpdir(), `jry_shot_src_${randomUUID()}${extname(media.filePath) || '.mp4'}`);
+    let jpegBuffer: Buffer;
+    try {
+      await this.streamR2ObjectToFile(req.user!.id, media.filePath, tmpVidPath);
+      jpegBuffer = await extractVideoFrameAtTimestamp(tmpVidPath, timestamp);
+    } finally {
+      await unlink(tmpVidPath).catch(() => {});
+    }
 
-    const videoExt = extname(media.filename);
-    const videoBase = videoExt ? media.filename.slice(0, -videoExt.length) : media.filename;
-    const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/:/g, '-');
-    const screenshotFilename = `Screenshot from ${videoBase} at ${ts}.${ext}`;
-    const filePath = `${randomUUID()}.${ext}`;
-
-    const meta = await sharp(buffer).metadata();
+    const meta = await sharp(jpegBuffer).metadata();
     const width = meta.width ?? null;
     const height = meta.height ?? null;
 
-    await this.uploadBufferToR2(req.user!.id, filePath, mimeType, buffer);
+    // Build a human-readable timestamp string for the filename (e.g. "01-23" or "1-02-45")
+    const totalSec = Math.floor(timestamp);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    const tsStr = h > 0
+      ? `${String(h).padStart(2, '0')}-${String(m).padStart(2, '0')}-${String(s).padStart(2, '0')}`
+      : `${String(m).padStart(2, '0')}-${String(s).padStart(2, '0')}`;
+
+    const videoExt = extname(media.filename);
+    const videoBase = videoExt ? media.filename.slice(0, -videoExt.length) : media.filename;
+    const screenshotFilename = `Screenshot from ${videoBase} at ${tsStr}.jpg`;
+    const filePath = `${randomUUID()}.jpg`;
+    const mimeType = 'image/jpeg';
+
+    await this.uploadBufferToR2(req.user!.id, filePath, mimeType, jpegBuffer);
 
     const newMedia = await this.prisma.media.create({
       data: {
@@ -2228,7 +2262,7 @@ export class MediaController {
         filePath,
         filename: screenshotFilename,
         mimeType,
-        sizeBytes: buffer.length,
+        sizeBytes: jpegBuffer.length,
         width,
         height,
       },
