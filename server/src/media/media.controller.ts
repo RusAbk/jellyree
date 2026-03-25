@@ -49,13 +49,18 @@ import { tmpdir } from 'os';
 
 const execFileAsync = promisify(execFile);
 
-async function extractVideoFrame(videoBuffer: Buffer): Promise<Buffer> {
+async function extractVideoFrame(videoBuffer: Buffer, ext: string): Promise<Buffer> {
   const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
+  const safeExt = ext.startsWith('.') ? ext : `.${ext}`;
   const tmpId = randomUUID();
-  const tmpIn = join(tmpdir(), `jry_vid_${tmpId}`);
+  const tmpIn = join(tmpdir(), `jry_vid_${tmpId}${safeExt}`);
   const tmpOut = join(tmpdir(), `jry_vid_${tmpId}.png`);
   await writeFile(tmpIn, videoBuffer);
   try {
+    await execFileAsync(ffmpegPath, ['-ss', '00:00:01', '-i', tmpIn, '-frames:v', '1', '-f', 'image2', '-y', tmpOut]);
+    return await readFile(tmpOut);
+  } catch {
+    // retry from start if seek past end (very short video)
     await execFileAsync(ffmpegPath, ['-i', tmpIn, '-frames:v', '1', '-f', 'image2', '-y', tmpOut]);
     return await readFile(tmpOut);
   } finally {
@@ -483,7 +488,7 @@ export class MediaController {
       const thumbPath = `thumbs/${mediaId}_${updatedAt.getTime()}_${thumbWidth}.webp`;
       const rawBuffer = await this.getObjectBufferFromR2(ownerId, filePath);
       const sourceBuffer = mimeType.startsWith('video/')
-        ? await extractVideoFrame(rawBuffer)
+        ? await extractVideoFrame(rawBuffer, extname(filePath) || '.mp4')
         : rawBuffer;
       const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
         .rotate()
@@ -2002,7 +2007,7 @@ export class MediaController {
         } else {
           const rawBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
           const sourceBuffer = media.mimeType.startsWith('video/')
-            ? await extractVideoFrame(rawBuffer)
+            ? await extractVideoFrame(rawBuffer, extname(media.filePath) || '.mp4')
             : rawBuffer;
           const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
             .rotate()
@@ -2098,7 +2103,7 @@ export class MediaController {
     try {
       const rawBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
       const sourceBuffer = media.mimeType.startsWith('video/')
-        ? await extractVideoFrame(rawBuffer)
+        ? await extractVideoFrame(rawBuffer, extname(media.filePath) || '.mp4')
         : rawBuffer;
       const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
         .rotate()
