@@ -14,6 +14,12 @@ type NumericAdjustmentKey =
   | 'glamour'
   | 'grayscale'
   | 'sepia'
+  | 'exposure'
+  | 'tint'
+  | 'vibrance'
+  | 'clarity'
+  | 'grain'
+  | 'fade'
   | 'cropZoom'
   | 'rotate'
   | 'cropX'
@@ -44,6 +50,12 @@ export const NUMERIC_ADJUSTMENT_RULES: Record<NumericAdjustmentKey, NumericRule>
   glamour: { min: 0, max: 100, defaultValue: 0, previewMode: 'server' },
   grayscale: { min: 0, max: 100, defaultValue: 0, previewMode: 'server' },
   sepia: { min: 0, max: 100, defaultValue: 0, previewMode: 'server' },
+  exposure: { min: -100, max: 100, defaultValue: 0, previewMode: 'server' },
+  tint: { min: -100, max: 100, defaultValue: 0, previewMode: 'server' },
+  vibrance: { min: -100, max: 100, defaultValue: 0, previewMode: 'server' },
+  clarity: { min: -100, max: 100, defaultValue: 0, previewMode: 'server' },
+  grain: { min: 0, max: 100, defaultValue: 0, previewMode: 'server' },
+  fade: { min: 0, max: 100, defaultValue: 0, previewMode: 'server' },
   cropZoom: { min: 0, max: 90, defaultValue: 0, previewMode: 'css' },
   rotate: { min: -180, max: 180, defaultValue: 0, previewMode: 'css' },
   cropX: { min: 0, max: 95, defaultValue: 0, previewMode: 'css' },

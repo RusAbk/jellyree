@@ -139,6 +139,7 @@ type SliderConfig = {
 
 const sectionSliders: Record<Exclude<DesktopSection, 'quick'>, SliderConfig[]> = {
   tone: [
+    { key: 'exposure', label: 'Exposure', min: -100, max: 100 },
     { key: 'brightness', label: 'Brightness', min: -60, max: 60 },
     { key: 'contrast', label: 'Contrast', min: -60, max: 60 },
     { key: 'toneDepth', label: 'Tone depth', min: -100, max: 100 },
@@ -147,15 +148,20 @@ const sectionSliders: Record<Exclude<DesktopSection, 'quick'>, SliderConfig[]> =
   ],
   detail: [
     { key: 'sharpness', label: 'Sharpness', min: 0, max: 100 },
+    { key: 'clarity', label: 'Clarity', min: -100, max: 100 },
     { key: 'definition', label: 'Definition', min: -100, max: 100 },
     { key: 'glamour', label: 'Glamour', min: 0, max: 100 },
+    { key: 'grain', label: 'Grain', min: 0, max: 100 },
     { key: 'vignette', label: 'Vignette', min: 0, max: 100 },
   ],
   color: [
     { key: 'temperature', label: 'Temperature', min: -100, max: 100 },
+    { key: 'tint', label: 'Tint', min: -100, max: 100 },
+    { key: 'vibrance', label: 'Vibrance', min: -100, max: 100 },
     { key: 'saturation', label: 'Saturation', min: -60, max: 60 },
     { key: 'grayscale', label: 'Grayscale', min: 0, max: 100 },
     { key: 'sepia', label: 'Sepia', min: 0, max: 100 },
+    { key: 'fade', label: 'Fade', min: 0, max: 100 },
   ],
   geometry: [
     { key: 'previewScale', label: 'Preview scale', min: 25, max: 300 },
@@ -685,7 +691,13 @@ function hasJsAdjustments(editor: EditorState) {
     editor.vignette !== 0 ||
     editor.glamour !== 0 ||
     editor.grayscale !== 0 ||
-    editor.sepia !== 0
+    editor.sepia !== 0 ||
+    editor.exposure !== 0 ||
+    editor.tint !== 0 ||
+    editor.vibrance !== 0 ||
+    editor.clarity !== 0 ||
+    editor.grain !== 0 ||
+    editor.fade !== 0
   )
 }
 
@@ -897,11 +909,27 @@ function applyJsAdjustments(data: ImageData, editor: EditorState) {
   const sepiaMix = Math.max(0, Math.min(1, editor.sepia / 100))
   const glamourMix = Math.max(0, Math.min(0.45, editor.glamour / 180))
   const detailBoost = Math.max(0, (editor.sharpness + Math.max(0, editor.definition)) / 250)
+  const exposureFactor = Math.pow(2, (editor.exposure / 100) * 2)
+  const tintGreenFactor = 1 - (editor.tint / 100) * 0.15
+  const vibranceFactor = editor.vibrance / 100
+  const clarityMix = editor.clarity / 100
+  const grainStrength = editor.grain / 100
+  const fadeLift = editor.fade / 100
 
   let blurredForBlend: Uint8ClampedArray | null = null
-  if (glamourMix > 0 || detailBoost > 0) {
+  if (glamourMix > 0 || detailBoost > 0 || clarityMix !== 0) {
     blurredForBlend = averageBlur(pixels, width, height)
   }
+
+  const grainField: Float32Array | null = grainStrength > 0
+    ? (() => {
+        const f = new Float32Array(width * height)
+        for (let k = 0; k < f.length; k += 1) {
+          f[k] = (Math.random() - 0.5) * grainStrength * 30
+        }
+        return f
+      })()
+    : null
 
   const centerX = width / 2
   const centerY = height / 2
@@ -924,9 +952,17 @@ function applyJsAdjustments(data: ImageData, editor: EditorState) {
         b = b * (1 - glamourMix) + (blurredForBlend[i + 2] || 0) * glamourMix
       }
 
+      // Exposure (multiplicative)
+      r *= exposureFactor
+      g *= exposureFactor
+      b *= exposureFactor
+
       r += tempShift * 0.52
       g += tempShift * 0.12
       b -= tempShift * 0.5
+
+      // Tint (green-magenta)
+      g *= tintGreenFactor
 
       r += brightnessShift
       g += brightnessShift
@@ -941,6 +977,17 @@ function applyJsAdjustments(data: ImageData, editor: EditorState) {
       r = satBase + (r - satBase) * saturationFactor
       g = satBase + (g - satBase) * saturationFactor
       b = satBase + (b - satBase) * saturationFactor
+
+      // Vibrance (selective saturation)
+      if (vibranceFactor !== 0) {
+        const maxC = Math.max(r, g, b)
+        const minC = Math.min(r, g, b)
+        const cs = (maxC - minC) / 255
+        const vibramt = vibranceFactor * (1 - Math.min(1, cs * 1.4))
+        r = lum + (r - lum) * (1 + vibramt)
+        g = lum + (g - lum) * (1 + vibramt)
+        b = lum + (b - lum) * (1 + vibramt)
+      }
 
       if (shadowsLift !== 0 && lum < 128) {
         const weight = (128 - lum) / 128
@@ -978,6 +1025,30 @@ function applyJsAdjustments(data: ImageData, editor: EditorState) {
         r += (r - (blurredForBlend[i] || 0)) * detailBoost
         g += (g - (blurredForBlend[i + 1] || 0)) * detailBoost
         b += (b - (blurredForBlend[i + 2] || 0)) * detailBoost
+      }
+
+      // Clarity (midtone local contrast)
+      if (clarityMix !== 0 && blurredForBlend) {
+        const lumNorm = lum / 255
+        const midtoneMask = 1 - Math.abs(lumNorm * 2 - 1)
+        r += (r - (blurredForBlend[i] || 0)) * clarityMix * 1.8 * midtoneMask
+        g += (g - (blurredForBlend[i + 1] || 0)) * clarityMix * 1.8 * midtoneMask
+        b += (b - (blurredForBlend[i + 2] || 0)) * clarityMix * 1.8 * midtoneMask
+      }
+
+      // Fade (faded film / matte look)
+      if (fadeLift > 0) {
+        r = r * (1 - fadeLift * 0.12) + fadeLift * 30.6
+        g = g * (1 - fadeLift * 0.12) + fadeLift * 30.6
+        b = b * (1 - fadeLift * 0.12) + fadeLift * 30.6
+      }
+
+      // Film grain
+      if (grainField) {
+        const grainVal = grainField[y * width + x] || 0
+        r += grainVal
+        g += grainVal
+        b += grainVal
       }
 
       if (vignettePower > 0) {
@@ -1052,6 +1123,12 @@ async function renderJsPreview() {
         glamour: props.editor.glamour,
         grayscale: props.editor.grayscale,
         sepia: props.editor.sepia,
+        exposure: props.editor.exposure,
+        tint: props.editor.tint,
+        vibrance: props.editor.vibrance,
+        clarity: props.editor.clarity,
+        grain: props.editor.grain,
+        fade: props.editor.fade,
       })
     }
 
@@ -1112,6 +1189,12 @@ watch(
     props.editor.glamour,
     props.editor.grayscale,
     props.editor.sepia,
+    props.editor.exposure,
+    props.editor.tint,
+    props.editor.vibrance,
+    props.editor.clarity,
+    props.editor.grain,
+    props.editor.fade,
     liquifyChangeTick.value,
     stretchAxis.value,
     stretchBandStart.value,

@@ -12,6 +12,12 @@ type WebglPreviewAdjustments = {
   glamour: number
   grayscale: number
   sepia: number
+  exposure: number
+  tint: number
+  vibrance: number
+  clarity: number
+  grain: number
+  fade: number
 }
 
 const VERTEX_SHADER = `
@@ -28,18 +34,24 @@ precision mediump float;
 uniform sampler2D u_image;
 uniform vec2 u_texel;
 uniform float u_temperature;
+uniform float u_tint;
 uniform float u_brightness;
 uniform float u_contrast;
 uniform float u_saturation;
+uniform float u_vibrance;
 uniform float u_toneDepth;
 uniform float u_shadows;
 uniform float u_highlights;
 uniform float u_sharpness;
 uniform float u_definition;
+uniform float u_clarity;
 uniform float u_vignette;
 uniform float u_glamour;
 uniform float u_grayscale;
 uniform float u_sepia;
+uniform float u_exposure;
+uniform float u_grain;
+uniform float u_fade;
 varying vec2 v_uv;
 
 float luminance(vec3 color) {
@@ -59,6 +71,9 @@ void main() {
   vec3 sharpened = center + (center - neighborAvg) * (u_sharpness * 1.6 + u_definition * 1.1);
   vec3 color = mix(center, sharpened, clamp(u_sharpness + u_definition, 0.0, 1.0));
 
+  // Exposure (multiplicative, before additive brightness)
+  color *= u_exposure;
+
   float luma = luminance(color);
   color += vec3(u_brightness);
   color = (color - 0.5) * (1.0 + u_contrast) + 0.5;
@@ -67,12 +82,28 @@ void main() {
   color.r += u_temperature * 0.20;
   color.b -= u_temperature * 0.16;
 
+  // Tint: green-magenta axis
+  color.g *= 1.0 - u_tint * 0.12;
+
+  // Vibrance: selective saturation (protects already-saturated colours)
+  luma = luminance(color);
+  float maxCh = max(color.r, max(color.g, color.b));
+  float minCh = min(color.r, min(color.g, color.b));
+  float curSat = maxCh - minCh;
+  float vibranceAmt = u_vibrance * (1.0 - clamp(curSat * 1.4, 0.0, 1.0));
+  color = mix(vec3(luma), color, 1.0 + vibranceAmt);
+
   float shadowMask = 1.0 - smoothstep(0.2, 0.72, luma);
   float highlightMask = smoothstep(0.35, 0.95, luma);
   color += vec3(u_shadows * 0.45 * shadowMask);
   color -= vec3(u_highlights * 0.38 * highlightMask);
 
   color = (color - 0.5) * (1.0 + u_toneDepth * 0.7) + 0.5;
+
+  // Clarity: midtone local contrast (uses 1-px neighbour avg as approximation)
+  luma = luminance(color);
+  float midtoneMask = 1.0 - abs(luma * 2.0 - 1.0);
+  color += (color - neighborAvg) * u_clarity * 1.8 * midtoneMask;
 
   vec2 p = v_uv * 2.0 - 1.0;
   float dist = length(p);
@@ -91,6 +122,13 @@ void main() {
     dot(color, vec3(0.272, 0.534, 0.131))
   );
   color = mix(color, sepiaColor, u_sepia);
+
+  // Fade: lift blacks for a matte/faded-film look
+  color = color * (1.0 - u_fade * 0.12) + vec3(u_fade * 0.12);
+
+  // Film grain: deterministic pseudo-random noise
+  float grainNoise = fract(sin(dot(v_uv * 833.0, vec2(127.1, 311.7))) * 43758.5453);
+  color += (grainNoise - 0.5) * u_grain * 0.12;
 
   gl_FragColor = vec4(clamp(color, 0.0, 1.0), centerSample.a);
 }
@@ -214,18 +252,24 @@ export function applyWebglPreviewAdjustments(
 
   const uniforms: Array<[string, number]> = [
     ['u_temperature', toUniform(adjustments.temperature, 1)],
+    ['u_tint', toUniform(adjustments.tint, 1.0)],
     ['u_brightness', toUniform(adjustments.brightness, 0.55)],
     ['u_contrast', toUniform(adjustments.contrast, 1.1)],
     ['u_saturation', toUniform(adjustments.saturation, 1.0)],
+    ['u_vibrance', toUniform(adjustments.vibrance, 1.0)],
     ['u_toneDepth', toUniform(adjustments.toneDepth, 1.0)],
     ['u_shadows', toUniform(adjustments.shadowsLevel, 1.0)],
     ['u_highlights', toUniform(adjustments.highlightsLevel, 1.0)],
     ['u_sharpness', toUniform(adjustments.sharpness, 1.0)],
     ['u_definition', toUniform(adjustments.definition, 1.0)],
+    ['u_clarity', toUniform(adjustments.clarity, 1.0)],
     ['u_vignette', toUniform(adjustments.vignette, 1.0)],
     ['u_glamour', toUniform(adjustments.glamour, 1.0)],
     ['u_grayscale', toUniform(adjustments.grayscale, 1.0)],
     ['u_sepia', toUniform(adjustments.sepia, 1.0)],
+    ['u_exposure', Math.pow(2, (adjustments.exposure / 100) * 2)],
+    ['u_grain', toUniform(adjustments.grain, 1.0)],
+    ['u_fade', toUniform(adjustments.fade, 1.0)],
   ]
 
   const texelLoc = gl.getUniformLocation(program, 'u_texel')

@@ -115,6 +115,19 @@ export type ShareSettings = {
   expiresAt: string | null
 }
 
+type InitVideoUploadResponse = {
+  ok: boolean
+  uploadId: string
+  chunkSizeBytes: number
+  uploadedBytes: number
+}
+
+type UploadVideoChunkResponse = {
+  ok: boolean
+  uploadedBytes: number
+  done: boolean
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -317,6 +330,79 @@ export const api = {
       xhr.ontimeout = () => reject(new Error('Upload timed out while waiting for server response'))
       xhr.send(formData)
     })
+  },
+  uploadVideoResumable: async (
+    token: string,
+    file: File,
+    options?: {
+      relativePath?: string
+      albumId?: string
+      createAlbumsFromFolders?: boolean
+      fileLastModified?: number
+    },
+    onProgress?: (loaded: number, total: number) => void,
+  ) => {
+    const init = await request<InitVideoUploadResponse>(
+      '/media/video-upload/init',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          filename: file.name,
+          mimeType: file.type,
+          sizeBytes: file.size,
+          relativePath: options?.relativePath || file.webkitRelativePath || file.name,
+          albumId: options?.albumId,
+          createAlbumsFromFolders: options?.createAlbumsFromFolders || false,
+          fileLastModified: options?.fileLastModified ?? file.lastModified,
+        }),
+      },
+      token,
+    )
+
+    const uploadId = init.uploadId
+    const chunkSize = Math.max(1, init.chunkSizeBytes || 8 * 1024 * 1024)
+    let uploadedBytes = Math.max(0, init.uploadedBytes || 0)
+
+    while (uploadedBytes < file.size) {
+      const nextEnd = Math.min(file.size, uploadedBytes + chunkSize)
+      const chunk = file.slice(uploadedBytes, nextEnd)
+
+      const chunkResponse = await fetch(`${API_BASE}/media/video-upload/${encodeURIComponent(uploadId)}/chunk`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/octet-stream',
+          'x-start-byte': String(uploadedBytes),
+        },
+        body: chunk,
+      })
+
+      const chunkData = await chunkResponse.json().catch(() => ({})) as {
+        error?: string
+        message?: string
+        expectedStartByte?: number
+      } & Partial<UploadVideoChunkResponse>
+
+      if (!chunkResponse.ok) {
+        if (chunkResponse.status === 409 && Number.isFinite(chunkData.expectedStartByte)) {
+          uploadedBytes = Math.max(0, Number(chunkData.expectedStartByte))
+          onProgress?.(uploadedBytes, file.size)
+          continue
+        }
+        throw new Error(chunkData?.message || chunkData?.error || 'Video upload chunk failed')
+      }
+
+      uploadedBytes = Math.max(uploadedBytes, Number(chunkData.uploadedBytes || nextEnd))
+      onProgress?.(uploadedBytes, file.size)
+    }
+
+    return request<{ ok: boolean; created: MediaItem[] }>(
+      `/media/video-upload/${encodeURIComponent(uploadId)}/complete`,
+      {
+        method: 'POST',
+      },
+      token,
+    )
   },
   updateMedia: (
     token: string,

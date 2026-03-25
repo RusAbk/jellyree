@@ -6,19 +6,25 @@ export type EditorMobileTab =
   | 'previewScale'
   | 'liquify'
   | 'stretch'
+  | 'exposure'
   | 'temperature'
+  | 'tint'
   | 'brightness'
   | 'contrast'
   | 'saturation'
+  | 'vibrance'
   | 'toneDepth'
   | 'shadowsLevel'
   | 'highlightsLevel'
   | 'sharpness'
+  | 'clarity'
   | 'definition'
   | 'vignette'
   | 'glamour'
   | 'grayscale'
   | 'sepia'
+  | 'grain'
+  | 'fade'
   | 'cropZoom'
   | 'rotate'
   | 'mirror'
@@ -42,6 +48,12 @@ export type EditorState = {
   glamour: number
   grayscale: number
   sepia: number
+  exposure: number
+  tint: number
+  vibrance: number
+  clarity: number
+  grain: number
+  fade: number
   cropZoom: number
   rotate: number
   flipX: boolean
@@ -79,6 +91,12 @@ type EditorAdjustmentSnapshot = {
   glamour: number
   grayscale: number
   sepia: number
+  exposure: number
+  tint: number
+  vibrance: number
+  clarity: number
+  grain: number
+  fade: number
   cropZoom: number
   rotate: number
   flipX: boolean
@@ -153,6 +171,12 @@ export function createDefaultEditorState(): EditorState {
     glamour: 0,
     grayscale: 0,
     sepia: 0,
+    exposure: 0,
+    tint: 0,
+    vibrance: 0,
+    clarity: 0,
+    grain: 0,
+    fade: 0,
     cropZoom: 0,
     rotate: 0,
     flipX: false,
@@ -174,19 +198,25 @@ export function useEditorState() {
     { key: 'previewScale', label: 'Scale' },
     { key: 'liquify', label: 'Liquify' },
     { key: 'stretch', label: 'Stretch' },
-    { key: 'temperature', label: 'Temp' },
+    { key: 'exposure', label: 'Exposure' },
     { key: 'brightness', label: 'Bright' },
     { key: 'contrast', label: 'Contrast' },
-    { key: 'saturation', label: 'Sat' },
     { key: 'toneDepth', label: 'Depth' },
     { key: 'shadowsLevel', label: 'Shadows' },
     { key: 'highlightsLevel', label: 'Highlights' },
-    { key: 'sharpness', label: 'Sharp' },
-    { key: 'definition', label: 'Def' },
-    { key: 'vignette', label: 'Vignette' },
-    { key: 'glamour', label: 'Glamour' },
+    { key: 'temperature', label: 'Temp' },
+    { key: 'tint', label: 'Tint' },
+    { key: 'vibrance', label: 'Vibrance' },
+    { key: 'saturation', label: 'Sat' },
     { key: 'grayscale', label: 'Gray' },
     { key: 'sepia', label: 'Sepia' },
+    { key: 'fade', label: 'Fade' },
+    { key: 'sharpness', label: 'Sharp' },
+    { key: 'clarity', label: 'Clarity' },
+    { key: 'definition', label: 'Def' },
+    { key: 'glamour', label: 'Glamour' },
+    { key: 'grain', label: 'Grain' },
+    { key: 'vignette', label: 'Vignette' },
     { key: 'cropZoom', label: 'Zoom' },
     { key: 'rotate', label: 'Rotate' },
     { key: 'mirror', label: 'Mirror' },
@@ -219,6 +249,12 @@ export function useEditorState() {
     editor.glamour = 0
     editor.grayscale = 0
     editor.sepia = 0
+    editor.exposure = 0
+    editor.tint = 0
+    editor.vibrance = 0
+    editor.clarity = 0
+    editor.grain = 0
+    editor.fade = 0
     editor.cropZoom = 0
     editor.rotate = 0
     editor.flipX = false
@@ -230,6 +266,7 @@ export function useEditorState() {
   }
 
   function resetToneAdjustments() {
+    editor.exposure = 0
     editor.brightness = 0
     editor.contrast = 0
     editor.toneDepth = 0
@@ -239,16 +276,21 @@ export function useEditorState() {
 
   function resetDetailAdjustments() {
     editor.sharpness = 0
+    editor.clarity = 0
     editor.definition = 0
     editor.glamour = 0
+    editor.grain = 0
     editor.vignette = 0
   }
 
   function resetColorAdjustments() {
     editor.temperature = 0
+    editor.tint = 0
+    editor.vibrance = 0
     editor.saturation = 0
     editor.grayscale = 0
     editor.sepia = 0
+    editor.fade = 0
   }
 
   function resetGeometryAdjustments() {

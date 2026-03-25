@@ -22,10 +22,10 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/jwt-auth.guard';
 import { diskStorage } from 'multer';
 import { extname, resolve } from 'path';
-import { createReadStream, existsSync, mkdirSync } from 'fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import type { Response } from 'express';
-import { unlink } from 'fs/promises';
+import { stat, unlink } from 'fs/promises';
 import * as bcrypt from 'bcrypt';
 import sharp from 'sharp';
 import { Prisma, ShareAccessMode, ShareResourceType } from '@prisma/client';
@@ -39,6 +39,10 @@ import {
 } from '@aws-sdk/client-s3';
 import { createOpaqueShareToken } from './share-token';
 import { normalizeEditorAdjustments, type NormalizedEditorAdjustments } from './editor-adjustments';
+import {
+  getVideoUploadSessionStore,
+  type VideoUploadSessionData,
+} from './video-upload-session-store';
 
 function toNumber(value: unknown, fallback: number) {
   const parsed = Number(value);
@@ -273,9 +277,30 @@ const uploadProcessingConcurrency = clampInteger(
   2,
   4,
 );
+const videoChunkSizeBytes = clampInteger(
+  toNumber(process.env.VIDEO_UPLOAD_CHUNK_BYTES, 8 * 1024 * 1024),
+  1 * 1024 * 1024,
+  16 * 1024 * 1024,
+);
 const r2Endpoint =
   process.env.R2_ENDPOINT ||
   (r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : '');
+
+type VideoUploadSession = {
+  uploadId: string;
+  ownerId: string;
+  tempFileName: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  relativePath: string | null;
+  lastModifiedAtIso: string | null;
+  albumId: string | null;
+  createAlbumsFromFolders: boolean;
+  createdAt: number;
+  uploadedBytes: number;
+};
+const videoUploadSessionStore = getVideoUploadSessionStore();
 
 @UseGuards(JwtAuthGuard)
 @Controller('media')
@@ -604,6 +629,80 @@ export class MediaController {
     }
   }
 
+  private async resolveAlbumForRelativePath(
+    ownerId: string,
+    relativePath: string | null,
+    baseAlbumId: string | null,
+  ) {
+    if (!relativePath) {
+      return baseAlbumId;
+    }
+
+    const pathParts = relativePath
+      .split(/[\\/]+/)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0 && part !== '.' && part !== '..');
+
+    const folderParts = pathParts.length > 1 ? pathParts.slice(0, -1) : [];
+    if (folderParts.length === 0) {
+      return baseAlbumId;
+    }
+
+    let targetAlbumId: string | null = baseAlbumId;
+    for (const folderName of folderParts) {
+      const normalizedName = folderName.trim() || 'Untitled album';
+
+      const existing = await this.prisma.album.findFirst({
+        where: {
+          ownerId,
+          parentId: targetAlbumId,
+          name: normalizedName,
+        },
+        select: { id: true },
+      });
+
+      if (existing) {
+        targetAlbumId = existing.id;
+        continue;
+      }
+
+      await this.ensureCanCreateAlbums(ownerId, 1);
+      const createdAlbum = await this.prisma.album.create({
+        data: {
+          ownerId,
+          parentId: targetAlbumId,
+          name: normalizedName,
+        },
+        select: { id: true },
+      });
+      targetAlbumId = createdAlbum.id;
+    }
+
+    return targetAlbumId;
+  }
+
+  private async getLocalFileSize(filePath: string) {
+    try {
+      const file = await stat(filePath);
+      return Number(file.size || 0);
+    } catch {
+      return 0;
+    }
+  }
+
+  private async pipeRequestBodyToLocalFile(req: RequestWithUser, absolutePath: string) {
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const output = createWriteStream(absolutePath, { flags: 'a' });
+
+      output.on('error', rejectPromise);
+      req.on('aborted', () => rejectPromise(new BadRequestException('Upload aborted by client')));
+      req.on('error', rejectPromise);
+
+      output.on('finish', () => resolvePromise());
+      req.pipe(output);
+    });
+  }
+
   private async clearMediaRevisions(mediaId: string, ownerId: string) {
     const revisions = await this.prisma.mediaRevision.findMany({
       where: { mediaId },
@@ -880,6 +979,12 @@ export class MediaController {
       glamour,
       grayscale,
       sepia,
+      exposure,
+      tint,
+      vibrance,
+      clarity,
+      grain,
+      fade,
       cropZoom,
       rotate,
       flipX,
@@ -943,6 +1048,12 @@ export class MediaController {
       pipeline = pipeline.flip();
     }
 
+    // Exposure (EV-based multiplicative, ±2 stops)
+    if (exposure !== 0) {
+      const expFactor = Math.max(0.05, Math.pow(2, (exposure / 100) * 2));
+      pipeline = pipeline.linear(expFactor, 0);
+    }
+
     const brightnessFactor = Math.max(0, 1 + brightness / 100);
     const saturationFactor = Math.max(0, (1 + saturation / 100) * (1 - grayscale / 100));
 
@@ -951,12 +1062,24 @@ export class MediaController {
       saturation: saturationFactor,
     });
 
+    // Vibrance (approximate: smaller saturation scale than full saturation)
+    if (vibrance !== 0) {
+      const vibFactor = Math.max(0, 1 + vibrance / 240);
+      pipeline = pipeline.modulate({ saturation: vibFactor });
+    }
+
     if (temperature !== 0) {
       const warmFactor = temperature / 100;
       const redGain = clamp(1 + warmFactor * 0.38, 0.6, 1.5);
       const greenGain = clamp(1 + warmFactor * 0.08, 0.75, 1.3);
       const blueGain = clamp(1 - warmFactor * 0.34, 0.55, 1.5);
       pipeline = pipeline.linear([redGain, greenGain, blueGain]);
+    }
+
+    // Tint (green-magenta white balance axis)
+    if (tint !== 0) {
+      const greenGain = clamp(1 - (tint / 100) * 0.15, 0.72, 1.28);
+      pipeline = pipeline.linear([1, greenGain, 1]);
     }
 
     if (contrast !== 0) {
@@ -988,6 +1111,15 @@ export class MediaController {
       pipeline = pipeline.sharpen(sharpenSigma);
     }
 
+    // Clarity (midtone local contrast — positive: wide-radius sharpen; negative: soft blur)
+    if (clarity !== 0) {
+      if (clarity > 0) {
+        pipeline = pipeline.sharpen({ sigma: clamp(1.2 + clarity / 60, 1.2, 3.5), m1: 0, m2: clarity / 50 });
+      } else {
+        pipeline = pipeline.blur(clamp(-clarity / 100 * 0.5 + 0.3, 0.3, 0.8));
+      }
+    }
+
     if (glamour > 0) {
       const glamourBlur = clamp(0.3 + glamour / 65, 0.3, 2.2);
       pipeline = pipeline.blur(glamourBlur).modulate({
@@ -1004,6 +1136,11 @@ export class MediaController {
       ]);
     }
 
+    // Fade: lift blacks / matte film look
+    if (fade > 0) {
+      pipeline = pipeline.linear(1, Math.round(fade / 100 * 28));
+    }
+
     if (options?.preview) {
       pipeline = pipeline.resize({
         width: 1600,
@@ -1015,6 +1152,27 @@ export class MediaController {
     }
 
     let outputBuffer = await pipeline.toBuffer();
+
+    // Film grain via SVG feTurbulence overlay
+    if (grain > 0) {
+      const grainMeta = await sharp(outputBuffer, { failOn: 'none' }).metadata();
+      if (grainMeta.width && grainMeta.height) {
+        const grainOpacity = clamp(grain / 100 * 0.52, 0.04, 0.52);
+        const baseFreq = clamp(0.55 + grain / 100 * 0.35, 0.55, 0.90).toFixed(3);
+        const grainSvg = Buffer.from(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="${grainMeta.width}" height="${grainMeta.height}">` +
+          `<filter id="g" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">` +
+          `<feTurbulence type="fractalNoise" baseFrequency="${baseFreq}" numOctaves="1" stitchTiles="stitch"/>` +
+          `<feColorMatrix type="saturate" values="0"/>` +
+          `</filter>` +
+          `<rect width="100%" height="100%" filter="url(#g)" opacity="${grainOpacity}"/>` +
+          `</svg>`,
+        );
+        outputBuffer = await sharp(outputBuffer, { failOn: 'none' })
+          .composite([{ input: grainSvg, blend: 'overlay' }])
+          .toBuffer();
+      }
+    }
 
     if (vignette > 0) {
       const outputSize = await sharp(outputBuffer, { failOn: 'none' }).metadata();
@@ -1446,6 +1604,234 @@ export class MediaController {
     }
 
     return { ok: true, created };
+  }
+
+  @Post('video-upload/init')
+  async initVideoUpload(
+    @Req() req: RequestWithUser,
+    @Body()
+    body: {
+      filename?: string;
+      mimeType?: string;
+      sizeBytes?: number;
+      relativePath?: string;
+      fileLastModified?: number | string | null;
+      albumId?: string;
+      createAlbumsFromFolders?: string | boolean;
+    },
+  ) {
+    const filename = String(body.filename || '').trim();
+    const mimeType = String(body.mimeType || '').trim().toLowerCase();
+    const sizeBytes = Number(body.sizeBytes || 0);
+
+    if (!filename) {
+      throw new BadRequestException('filename is required');
+    }
+    if (!mimeType.startsWith('video/')) {
+      throw new BadRequestException('Only video mime types are allowed for resumable upload');
+    }
+    if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+      throw new BadRequestException('sizeBytes must be a positive number');
+    }
+
+    const ownerId = req.user!.id;
+    if (body.albumId) {
+      const album = await this.prisma.album.findFirst({
+        where: { id: body.albumId, ownerId },
+        select: { id: true },
+      });
+      if (!album) {
+        throw new BadRequestException('Album not found');
+      }
+    }
+
+    await this.ensureCanCreateFiles(ownerId, 1, sizeBytes);
+
+    const uploadId = randomUUID();
+    const tempFileName = `${uploadId}.part`;
+    const createAlbumsFromFolders =
+      body.createAlbumsFromFolders === true || body.createAlbumsFromFolders === 'true';
+
+    const session: VideoUploadSessionData = {
+      uploadId,
+      ownerId,
+      tempFileName,
+      filename,
+      mimeType,
+      sizeBytes,
+      relativePath: body.relativePath ? String(body.relativePath) : null,
+      lastModifiedAtIso: (() => {
+        const normalizedDate = normalizeExifDate(body.fileLastModified ?? null);
+        return normalizedDate ? normalizedDate.toISOString() : null;
+      })(),
+      albumId: body.albumId || null,
+      createAlbumsFromFolders,
+      createdAt: Date.now(),
+      uploadedBytes: 0,
+    };
+
+    await videoUploadSessionStore.create(session);
+
+    return {
+      ok: true,
+      uploadId,
+      chunkSizeBytes: videoChunkSizeBytes,
+      uploadedBytes: 0,
+    };
+  }
+
+  @Patch('video-upload/:uploadId/chunk')
+  async uploadVideoChunk(
+    @Req() req: RequestWithUser,
+    @Param('uploadId') uploadId: string,
+    @Res() response: Response,
+  ) {
+    const session = (await videoUploadSessionStore.get(uploadId)) as VideoUploadSession | null;
+    if (!session || session.ownerId !== req.user!.id) {
+      return response.status(404).json({ error: 'Upload session not found' });
+    }
+
+    const tempPath = resolve(tempUploadRoot, session.tempFileName);
+    const localFileBytes = await this.getLocalFileSize(tempPath);
+    const expectedStartByte = Number(session.uploadedBytes || 0);
+
+    if (localFileBytes !== expectedStartByte) {
+      return response.status(409).json({
+        error: 'Upload state mismatch. Retry upload or enable sticky sessions/shared temp storage.',
+        expectedStartByte: localFileBytes,
+      });
+    }
+
+    const headerStartRaw = req.headers['x-start-byte'];
+    const headerStart = Number(Array.isArray(headerStartRaw) ? headerStartRaw[0] : headerStartRaw);
+
+    if (!Number.isFinite(headerStart) || headerStart < 0) {
+      return response.status(400).json({ error: 'x-start-byte header is required' });
+    }
+
+    if (headerStart !== expectedStartByte) {
+      return response.status(409).json({
+        error: 'Invalid chunk offset',
+        expectedStartByte,
+      });
+    }
+
+    try {
+      await this.pipeRequestBodyToLocalFile(req, tempPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to write upload chunk';
+      return response.status(500).json({ error: message });
+    }
+
+    const uploadedBytes = await this.getLocalFileSize(tempPath);
+    if (uploadedBytes > session.sizeBytes) {
+      await unlink(tempPath).catch(() => undefined);
+      await videoUploadSessionStore.remove(uploadId);
+      return response.status(400).json({ error: 'Uploaded bytes exceed declared file size' });
+    }
+
+    const casResult = await videoUploadSessionStore.compareAndSetUploadedBytes(
+      uploadId,
+      expectedStartByte,
+      uploadedBytes,
+    );
+
+    if (!casResult.ok) {
+      return response.status(casResult.reason === 'not_found' ? 404 : 409).json({
+        error: casResult.reason === 'not_found' ? 'Upload session not found' : 'Invalid chunk offset',
+        expectedStartByte: casResult.uploadedBytes,
+      });
+    }
+
+    return response.json({
+      ok: true,
+      uploadedBytes: casResult.uploadedBytes,
+      done: casResult.uploadedBytes >= session.sizeBytes,
+    });
+  }
+
+  @Post('video-upload/:uploadId/complete')
+  async completeVideoUpload(@Req() req: RequestWithUser, @Param('uploadId') uploadId: string) {
+    const session = (await videoUploadSessionStore.get(uploadId)) as VideoUploadSession | null;
+    if (!session || session.ownerId !== req.user!.id) {
+      throw new NotFoundException('Upload session not found');
+    }
+
+    const tempPath = resolve(tempUploadRoot, session.tempFileName);
+    const uploadedBytes = await this.getLocalFileSize(tempPath);
+    if (uploadedBytes !== session.sizeBytes) {
+      throw new BadRequestException(
+        `Upload is incomplete (${uploadedBytes}/${session.sizeBytes} bytes)`
+      );
+    }
+
+    const ownerId = req.user!.id;
+    const finalFilePath = `${randomUUID()}${extname(session.filename)}`;
+
+    try {
+      await this.uploadLocalFileToR2(ownerId, finalFilePath, session.mimeType, tempPath);
+
+      const created = await this.prisma.media.create({
+        data: {
+          ownerId,
+          filePath: finalFilePath,
+          filename: session.filename,
+          relativePath: session.relativePath,
+          mimeType: session.mimeType,
+          sizeBytes: session.sizeBytes,
+          width: null,
+          height: null,
+          capturedAt: session.lastModifiedAtIso ? new Date(session.lastModifiedAtIso) : null,
+          metadataCreatedAt: session.lastModifiedAtIso ? new Date(session.lastModifiedAtIso) : null,
+          metadataModifiedAt: session.lastModifiedAtIso ? new Date(session.lastModifiedAtIso) : null,
+          latitude: null,
+          longitude: null,
+        },
+        include: {
+          mediaTags: { include: { tag: true } },
+          albumMedia: true,
+        },
+      });
+
+      let targetAlbumId = session.albumId;
+      if (session.createAlbumsFromFolders) {
+        targetAlbumId = await this.resolveAlbumForRelativePath(
+          ownerId,
+          session.relativePath,
+          session.albumId,
+        );
+      }
+
+      if (targetAlbumId) {
+        await this.prisma.albumMedia.upsert({
+          where: { mediaId: created.id },
+          update: { albumId: targetAlbumId },
+          create: { albumId: targetAlbumId, mediaId: created.id },
+        });
+      }
+
+      await videoUploadSessionStore.remove(uploadId);
+      await unlink(tempPath).catch(() => undefined);
+
+      const reloaded = await this.prisma.media.findUnique({
+        where: { id: created.id },
+        include: {
+          mediaTags: { include: { tag: true } },
+          albumMedia: true,
+        },
+      });
+
+      return {
+        ok: true,
+        created: reloaded ? [reloaded] : [created],
+      };
+    } catch (error) {
+      await this.deleteObjectFromR2(ownerId, finalFilePath).catch(() => undefined);
+      throw error;
+    } finally {
+      await videoUploadSessionStore.remove(uploadId);
+      await unlink(tempPath).catch(() => undefined);
+    }
   }
 
   @Get('admin/archive')
