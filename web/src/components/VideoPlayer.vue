@@ -184,10 +184,17 @@ function seekBy(seconds: number) {
 }
 
 function onKeyDown(e: KeyboardEvent) {
-  const tag = (e.target as HTMLElement).tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+  const target = e.target as HTMLElement
+  // Only bail out for text inputs where the user is actively typing.
+  // Range sliders, selects, and buttons should still let the player handle shortcuts.
+  const isTypingField =
+    (target instanceof HTMLInputElement && target.type !== 'range') ||
+    target instanceof HTMLTextAreaElement
+  if (isTypingField) return
 
   if (e.code === 'Space') {
+    // SELECT opens on Space — don't intercept it
+    if (target instanceof HTMLSelectElement) return
     e.preventDefault()
     e.stopImmediatePropagation()
     togglePlay()
@@ -266,13 +273,14 @@ onUnmounted(() => {
           ref="videoRef"
           class="vp-video"
           :src="streamUrl"
+          crossorigin="anonymous"
           preload="metadata"
           @timeupdate="onTimeUpdate"
           @loadedmetadata="onLoaded"
           @ended="playing = false"
           @pause="playing = false"
           @play="playing = true"
-          @click.stop
+          @click.stop="togglePlay"
         />
         <!-- Big play button overlay when paused -->
         <Transition name="vp-playbtn">
