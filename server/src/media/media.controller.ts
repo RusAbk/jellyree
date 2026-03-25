@@ -18,8 +18,7 @@ import {
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { PrismaService } from '../prisma/prisma.service';
-import { JwtService } from '@nestjs/jwt';
-import { JwtAuthGuard, Public } from '../auth/jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/jwt-auth.guard';
 import { diskStorage } from 'multer';
 import { extname, join, resolve } from 'path';
@@ -337,7 +336,6 @@ const videoUploadSessionStore = getVideoUploadSessionStore();
 export class MediaController {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
   ) {}
 
   private r2Client: S3Client | null = null;
@@ -2116,41 +2114,21 @@ export class MediaController {
   }
 
   /**
-   * Streaming video endpoint — accepts JWT via query param so <video src> can use it directly.
+   * Streaming video endpoint — accepts JWT via ?token= query param so <video src> can use it.
+   * Auth is handled by JwtAuthGuard which now accepts query-param tokens.
    * Supports HTTP Range requests for seeking.
    */
-  @Public()
   @Get(':id/stream')
   async stream(
+    @Req() req: RequestWithUser,
     @Param('id') id: string,
-    @Query('token') tokenQuery: string | undefined,
-    @Req() req: Request & { headers: Record<string, string | string[] | undefined> },
     @Res() response: Response,
   ) {
-    if (!tokenQuery) {
-      return response.status(401).json({ error: 'Missing token' });
-    }
-
-    let userId: string;
-    try {
-      const payload = await this.jwtService.verifyAsync<{ sub: string }>(tokenQuery);
-      userId = payload.sub;
-    } catch {
-      return response.status(401).json({ error: 'Invalid token' });
-    }
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, isFrozen: true, deletedAt: true },
-    });
-    if (!user || user.deletedAt || user.isFrozen) {
-      return response.status(401).json({ error: 'Unauthorized' });
-    }
-
+    const userId = req.user!.id;
     const media = await this.prisma.media.findFirst({ where: { id, ownerId: userId } });
     if (!media) return response.status(404).json({ error: 'Not found' });
 
-    const rangeHeader = req.headers['range'] as string | undefined;
+    const rangeHeader = (req.headers['range'] as string | undefined);
     const client = this.getR2Client();
     const key = this.objectKey(userId, media.filePath);
     const legacyKey = media.filePath.replace(/^\/+/, '');

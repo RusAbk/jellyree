@@ -3,16 +3,11 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
-  SetMetadata,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
-
-export const IS_PUBLIC_KEY = 'isPublic';
-export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
 
 export type RequestWithUser = Request & {
   user?: {
@@ -28,25 +23,19 @@ export class JwtAuthGuard implements CanActivate {
   constructor(
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
-    private readonly reflector: Reflector,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
-    if (isPublic) return true;
-
-    const request = context.switchToHttp().getRequest<RequestWithUser>();
+    const request = context.switchToHttp().getRequest<RequestWithUser & { query: Record<string, string> }>();
     const authHeader = request.headers['authorization'];
 
-    if (!authHeader || typeof authHeader !== 'string') {
-      throw new UnauthorizedException('Missing token');
-    }
+    // Accept JWT either from Authorization header or ?token= query param
+    // (query param is needed for <video src> / <audio src> which can't send headers)
+    const rawToken =
+      (typeof authHeader === 'string' ? authHeader.replace('Bearer ', '').trim() : '') ||
+      (typeof request.query.token === 'string' ? request.query.token.trim() : '');
 
-    const token = authHeader.replace('Bearer ', '').trim();
-    if (!token) {
+    if (!rawToken) {
       throw new UnauthorizedException('Missing token');
     }
 
@@ -56,7 +45,7 @@ export class JwtAuthGuard implements CanActivate {
         email: string;
         displayName: string | null;
         isAdmin?: boolean;
-      }>(token);
+      }>(rawToken);
       request.user = {
         id: payload.sub,
         email: payload.email,
