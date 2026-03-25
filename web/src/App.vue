@@ -3355,8 +3355,26 @@ async function uploadFilesInBatches(
   const lastModifieds = options?.fileLastModifieds && options.fileLastModifieds.length === files.length
     ? options.fileLastModifieds
     : files.map((file) => file.lastModified)
-  const batches = chunkUploadByTotalSize(files, relativePaths, lastModifieds)
   const totalBytes = files.reduce((sum, file) => sum + Math.max(0, file.size || 0), 0)
+
+  const photoFiles: File[] = []
+  const photoPaths: string[] = []
+  const photoLastModifieds: number[] = []
+  const videoEntries: Array<{ file: File; relativePath: string; lastModified: number }> = []
+
+  files.forEach((file, index) => {
+    const relativePath = relativePaths[index] || file.name
+    const lastModified = lastModifieds[index] || file.lastModified
+    if ((file.type || '').toLowerCase().startsWith('video/')) {
+      videoEntries.push({ file, relativePath, lastModified })
+      return
+    }
+    photoFiles.push(file)
+    photoPaths.push(relativePath)
+    photoLastModifieds.push(lastModified)
+  })
+
+  const batches = chunkUploadByTotalSize(photoFiles, photoPaths, photoLastModifieds)
 
   let completedBytes = 0
   const createdAll: MediaItem[] = []
@@ -3382,6 +3400,33 @@ async function uploadFilesInBatches(
     }
 
     completedBytes += batch.totalBytes
+    if (totalBytes > 0) {
+      updateUploadProgress(completedBytes, totalBytes)
+    }
+  }
+
+  for (const video of videoEntries) {
+    const result = await api.uploadVideoResumable(
+      authHeaders(),
+      video.file,
+      {
+        relativePath: video.relativePath,
+        albumId: options?.albumId,
+        createAlbumsFromFolders: options?.createAlbumsFromFolders,
+        fileLastModified: video.lastModified,
+      },
+      (loaded, total) => {
+        if (totalBytes <= 0) return
+        const loadedInVideo = Math.min(Math.max(0, loaded), total)
+        updateUploadProgress(completedBytes + loadedInVideo, totalBytes)
+      },
+    )
+
+    if (Array.isArray(result.created) && result.created.length > 0) {
+      createdAll.push(...result.created)
+    }
+
+    completedBytes += Math.max(0, video.file.size || 0)
     if (totalBytes > 0) {
       updateUploadProgress(completedBytes, totalBytes)
     }
@@ -4155,11 +4200,21 @@ async function deleteMedia(mediaId: string) {
   const previousActive = activeMediaId.value
   const previousLightboxOpen = lightboxOpen.value
   const removedSizeBytes = removed.item.sizeBytes
+  const wasActiveInLightbox = lightboxOpen.value && activeMediaId.value === mediaId
+  const currentLightboxIndex = lightboxIndex.value
 
   media.value = media.value.filter((item) => item.id !== mediaId)
   selectedMediaIds.value = selectedMediaIds.value.filter((id) => id !== mediaId)
   if (activeMediaId.value === mediaId) {
-    activeMediaId.value = selectedMediaIds.value[0] || media.value[0]?.id || null
+    if (wasActiveInLightbox) {
+      // Navigate to the item that took the same position, or the new last item
+      activeMediaId.value =
+        lightboxItems.value[currentLightboxIndex]?.id ??
+        lightboxItems.value[currentLightboxIndex - 1]?.id ??
+        null
+    } else {
+      activeMediaId.value = selectedMediaIds.value[0] || null
+    }
     if (!activeMediaId.value) {
       lightboxOpen.value = false
       editModeOpen.value = false
