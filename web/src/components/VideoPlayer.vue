@@ -156,6 +156,31 @@ function onFullscreenChange() {
   isFullscreen.value = Boolean(document.fullscreenElement)
 }
 
+function changeVolume(delta: number) {
+  const next = Math.min(1, Math.max(0, volume.value + delta))
+  volume.value = next
+  muted.value = next === 0
+  if (videoRef.value) {
+    videoRef.value.volume = next
+    videoRef.value.muted = muted.value
+  }
+}
+
+function changeSpeed(delta: number) {
+  const idx = SPEEDS.indexOf(speed.value)
+  const nextIdx = Math.min(SPEEDS.length - 1, Math.max(0, idx + delta))
+  speed.value = SPEEDS[nextIdx]
+  if (videoRef.value) videoRef.value.playbackRate = SPEEDS[nextIdx]
+}
+
+function seekBy(seconds: number) {
+  if (!videoRef.value) return
+  videoRef.value.currentTime = Math.min(
+    videoRef.value.duration,
+    Math.max(0, videoRef.value.currentTime + seconds),
+  )
+}
+
 function onKeyDown(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement).tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
@@ -167,17 +192,34 @@ function onKeyDown(e: KeyboardEvent) {
   } else if (e.key === 'Escape') {
     e.stopImmediatePropagation()
     // let App.vue's handler call closeLightbox
-  } else if (e.key === 'ArrowLeft' && e.shiftKey) {
-    // Shift+Left seeks back 10s; plain Left navigates (handled by App.vue)
+  } else if (e.key === 'ArrowLeft') {
     e.preventDefault()
     e.stopImmediatePropagation()
-    if (videoRef.value) videoRef.value.currentTime = Math.max(0, videoRef.value.currentTime - 10)
-  } else if (e.key === 'ArrowRight' && e.shiftKey) {
+    seekBy(-5)
+  } else if (e.key === 'ArrowRight') {
     e.preventDefault()
     e.stopImmediatePropagation()
-    if (videoRef.value) {
-      videoRef.value.currentTime = Math.min(videoRef.value.duration, videoRef.value.currentTime + 10)
-    }
+    seekBy(5)
+  } else if (e.key === 'ArrowUp' && e.ctrlKey) {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    changeSpeed(1)
+  } else if (e.key === 'ArrowDown' && e.ctrlKey) {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    changeSpeed(-1)
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    changeVolume(0.1)
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    changeVolume(-0.1)
+  } else if (e.key === 'S' && e.shiftKey) {
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    void takeScreenshot()
   }
 }
 
