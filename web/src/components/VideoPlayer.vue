@@ -333,6 +333,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   width: min(96vw, 1100px);
+  height: 96vh;
   max-height: 96vh;
   background: #18181b;
   border-radius: 12px;
@@ -343,6 +344,7 @@ onUnmounted(() => {
 /* fullscreen: shell fills the screen */
 :fullscreen .vp-shell {
   width: 100vw;
+  height: 100vh;
   max-height: 100vh;
   border-radius: 0;
 }
@@ -371,8 +373,9 @@ onUnmounted(() => {
 /* Stage */
 .vp-stage {
   position: relative;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
+  overflow: hidden;
   background: #000;
   cursor: pointer;
   display: flex;
@@ -384,8 +387,8 @@ onUnmounted(() => {
   display: block;
   max-width: 100%;
   max-height: 100%;
-  width: 100%;
-  height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
   background: #000;
 }
