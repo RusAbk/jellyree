@@ -534,8 +534,9 @@ export class MediaController {
         .webp({ quality: 80, effort: 4 })
         .toBuffer();
       await this.uploadBufferToR2(ownerId, thumbPath, 'image/webp', thumbBuffer);
-    } catch {
+    } catch (err) {
       // best-effort: thumb will be generated on first request if this fails
+      console.error(`[warmThumb] failed for media ${mediaId}:`, err instanceof Error ? err.message : err);
     }
   }
 

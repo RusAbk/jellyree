@@ -120,7 +120,8 @@ async function takeScreenshot() {
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   ctx.drawImage(v, 0, 0)
-  const dataUrl = canvas.toDataURL('image/png')
+  // JPEG is much smaller than PNG (5-10x) which matters for large video frames
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
 
   screenshotSaving.value = true
   screenshotDone.value = false

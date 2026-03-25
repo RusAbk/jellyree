@@ -32,8 +32,8 @@ function parseCorsOrigins(raw: string | undefined): true | Set<string> {
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.use(json({ limit: '25mb' }));
-  app.use(urlencoded({ extended: true, limit: '25mb' }));
+  app.use(json({ limit: '100mb' }));
+  app.use(urlencoded({ extended: true, limit: '100mb' }));
   const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
   const corsCredentials = (process.env.CORS_CREDENTIALS || 'true').toLowerCase() !== 'false';
 
