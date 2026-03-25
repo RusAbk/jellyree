@@ -291,22 +291,14 @@ export function applyWebglPreviewAdjustments(
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
 
-  const pixels = new Uint8Array(width * height * 4)
+  const pixels = new Uint8ClampedArray(width * height * 4)
   gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
-
-  const output = new Uint8ClampedArray(width * height * 4)
-  for (let y = 0; y < height; y += 1) {
-    const srcY = height - 1 - y
-    const srcOffset = srcY * width * 4
-    const dstOffset = y * width * 4
-    output.set(pixels.subarray(srcOffset, srcOffset + width * 4), dstOffset)
-  }
 
   gl.deleteTexture(texture)
   gl.deleteBuffer(buffer)
   gl.deleteProgram(program)
 
-  return new ImageData(output, width, height)
+  return new ImageData(pixels, width, height)
 }
 
 export type { WebglPreviewAdjustments }
