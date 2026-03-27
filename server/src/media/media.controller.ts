@@ -2215,6 +2215,17 @@ export class MediaController {
   ) {
     const media = await this.prisma.media.findFirst({
       where: { id, ownerId: req.user!.id },
+      select: {
+        id: true,
+        filePath: true,
+        filename: true,
+        mimeType: true,
+        albumMedia: {
+          select: {
+            albumId: true,
+          },
+        },
+      },
     });
     if (!media) return response.status(404).json({ error: 'Not found' });
 
@@ -2265,6 +2276,15 @@ export class MediaController {
         sizeBytes: jpegBuffer.length,
         width,
         height,
+        ...(media.albumMedia[0]?.albumId
+          ? {
+              albumMedia: {
+                create: {
+                  albumId: media.albumMedia[0].albumId,
+                },
+              },
+            }
+          : {}),
       },
       include: {
         mediaTags: { include: { tag: true } },

@@ -2958,8 +2958,8 @@ function openLightbox(mediaId: string) {
   lightboxOpen.value = true
 }
 
-function onVideoScreenshotSaved(newItem: MediaItem) {
-  media.value.unshift(newItem)
+async function onVideoScreenshotSaved(_newItem: MediaItem) {
+  await loadAll()
 }
 
 async function scrollActiveMediaCardIntoView() {
