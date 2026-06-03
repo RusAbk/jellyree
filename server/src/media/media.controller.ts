@@ -105,12 +105,16 @@ async function renderBrowserSafeImageBuffer(sourceBuffer: Buffer, mimeType: stri
     return { body: sourceBuffer, contentType: mimeType || 'application/octet-stream' };
   }
 
-  const body = await sharp(sourceBuffer, { failOn: 'none' })
-    .rotate()
-    .jpeg({ quality: 92, mozjpeg: true })
-    .toBuffer();
+  try {
+    const body = await sharp(sourceBuffer, { failOn: 'none' })
+      .rotate()
+      .jpeg({ quality: 92, mozjpeg: true })
+      .toBuffer();
 
-  return { body, contentType: 'image/jpeg' };
+    return { body, contentType: 'image/jpeg' };
+  } catch {
+    return { body: sourceBuffer, contentType: mimeType || 'application/octet-stream' };
+  }
 }
 
 function toNumber(value: unknown, fallback: number) {

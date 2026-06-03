@@ -105,6 +105,7 @@ const sharedLoading = ref(false)
 const sharedAlbum = ref<{ id: string; name: string; description: string | null } | null>(null)
 const sharedMedia = ref<MediaItem | null>(null)
 const sharedAlbumMedia = ref<MediaItem[]>([])
+const sharedPreviewUrls = ref<Record<string, string>>({})
 const sharedPassword = ref('')
 const sharedPasswordInput = ref('')
 const mediaShareEnabled = ref<Record<string, boolean>>({})
@@ -254,6 +255,7 @@ let popStateHandler: (() => void) | null = null
 const thumbLoadsInFlight = new Map<string, Promise<void>>()
 const fullImageLoadsInFlight = new Map<string, Promise<void>>()
 const fullImageAbortControllers = new Map<string, AbortController>()
+const sharedPreviewLoadsInFlight = new Map<string, Promise<void>>()
 const pendingThumbUpdates = new Map<string, string>()
 let progressiveThumbLoadRunId = 0
 let thumbVisibilityObserver: IntersectionObserver | null = null
@@ -916,6 +918,7 @@ async function loadPublicRoute() {
   if (!routeToken.value) return
   sharedLoading.value = true
   message.value = ''
+  clearSharedPreviewUrls()
 
   try {
     if (routeMode.value === 'public-media') {
@@ -923,6 +926,7 @@ async function loadPublicRoute() {
       sharedMedia.value = payload.media
       sharedAlbum.value = null
       sharedAlbumMedia.value = []
+      void loadSharedPreview(payload.media)
       return
     }
 
@@ -931,6 +935,7 @@ async function loadPublicRoute() {
       sharedAlbum.value = payload.album
       sharedAlbumMedia.value = payload.media
       sharedMedia.value = null
+      payload.media.forEach((item) => void loadSharedPreview(item))
       return
     }
   } catch (error) {
@@ -964,6 +969,7 @@ async function applyRouteFromLocation() {
   sharedMedia.value = null
   sharedAlbum.value = null
   sharedAlbumMedia.value = []
+  clearSharedPreviewUrls()
 
   if (!token.value) return
 
@@ -1096,6 +1102,63 @@ function publicFileUrl(mediaId: string) {
     return api.publicAlbumMediaFileUrl(routeToken.value, mediaId, sharedPassword.value || undefined)
   }
   return ''
+}
+
+function publicPreviewSrc(item: MediaItem) {
+  if (isHeicFile(item)) {
+    return sharedPreviewUrls.value[item.id] || ''
+  }
+  return publicFileUrl(item.id)
+}
+
+function clearSharedPreviewUrls() {
+  for (const url of Object.values(sharedPreviewUrls.value)) {
+    if (url.startsWith('blob:')) {
+      URL.revokeObjectURL(url)
+    }
+  }
+  sharedPreviewLoadsInFlight.clear()
+  sharedPreviewUrls.value = {}
+}
+
+async function loadSharedPreview(item: MediaItem) {
+  if (!isHeicFile(item) || sharedPreviewUrls.value[item.id]) return
+
+  const existing = sharedPreviewLoadsInFlight.get(item.id)
+  if (existing) {
+    await existing
+    return
+  }
+
+  const task = (async () => {
+    const url = publicFileUrl(item.id)
+    if (!url) return
+    const response = await fetch(url)
+    if (!response.ok) throw new Error('Cannot load shared image')
+    const blob = await response.blob()
+    const previewBlob = await prepareBrowserImageBlob(blob, item)
+    const objectUrl = URL.createObjectURL(previewBlob)
+    const previous = sharedPreviewUrls.value[item.id]
+    if (previous?.startsWith('blob:')) {
+      URL.revokeObjectURL(previous)
+    }
+    sharedPreviewUrls.value = {
+      ...sharedPreviewUrls.value,
+      [item.id]: objectUrl,
+    }
+  })()
+
+  sharedPreviewLoadsInFlight.set(item.id, task)
+  try {
+    await task
+  } catch {
+    sharedPreviewUrls.value = {
+      ...sharedPreviewUrls.value,
+      [item.id]: '',
+    }
+  } finally {
+    sharedPreviewLoadsInFlight.delete(item.id)
+  }
 }
 
 function submitSharedPassword() {
@@ -2255,6 +2318,33 @@ async function decodeImageBlobIfSupported(blob: Blob) {
   }
 }
 
+async function convertHeicBlobToJpeg(blob: Blob) {
+  const { default: heic2any } = await import('heic2any')
+  const converted = await heic2any({
+    blob,
+    toType: 'image/jpeg',
+    quality: 0.9,
+  })
+  const convertedBlob = Array.isArray(converted) ? converted[0] : converted
+  if (!convertedBlob) {
+    throw new Error('HEIC conversion produced no image')
+  }
+  return convertedBlob
+}
+
+async function prepareBrowserImageBlob(blob: Blob, item: MediaItem) {
+  try {
+    await decodeImageBlobIfSupported(blob)
+    return blob
+  } catch (error) {
+    if (!isHeicFile(item)) throw error
+  }
+
+  const converted = await convertHeicBlobToJpeg(blob)
+  await decodeImageBlobIfSupported(converted)
+  return converted
+}
+
 function clearThumb(mediaId: string) {
   const previous = thumbs.value[mediaId]
   if (previous && previous.startsWith('blob:')) {
@@ -2322,7 +2412,8 @@ async function loadActiveLightboxFullImage() {
   const task = (async () => {
     try {
       const blob = await api.fetchFileBlob(token.value as string, mediaId, controller.signal)
-      const objectUrl = URL.createObjectURL(blob)
+      const previewBlob = await prepareBrowserImageBlob(blob, item)
+      const objectUrl = URL.createObjectURL(previewBlob)
 
       if (lightboxFullImages.value[mediaId]) {
         URL.revokeObjectURL(objectUrl)
@@ -2374,13 +2465,16 @@ async function loadThumb(mediaId: string) {
       const mediaItem = media.value.find((item) => item.id === mediaId)
       const version = mediaItem?.updatedAt ? Date.parse(mediaItem.updatedAt) : undefined
       const blob = await api.fetchThumbBlob(token.value as string, mediaId, width, Number.isFinite(version) ? version : undefined)
-      await decodeImageBlobIfSupported(blob)
-      queueThumbUpdate(mediaId, URL.createObjectURL(blob))
+      if (!mediaItem) throw new Error('Media item not found')
+      const previewBlob = await prepareBrowserImageBlob(blob, mediaItem)
+      queueThumbUpdate(mediaId, URL.createObjectURL(previewBlob))
     } catch {
       try {
         const blob = await api.fetchFileBlob(token.value as string, mediaId)
-        await decodeImageBlobIfSupported(blob)
-        queueThumbUpdate(mediaId, URL.createObjectURL(blob))
+        const mediaItem = media.value.find((item) => item.id === mediaId)
+        if (!mediaItem) throw new Error('Media item not found')
+        const previewBlob = await prepareBrowserImageBlob(blob, mediaItem)
+        queueThumbUpdate(mediaId, URL.createObjectURL(previewBlob))
       } catch {
         queueThumbUpdate(mediaId, '')
       }
@@ -5164,6 +5258,7 @@ onBeforeUnmount(() => {
   }
   pendingThumbUpdates.clear()
   clearLightboxFullImage()
+  clearSharedPreviewUrls()
   if (toastTimer) {
     clearTimeout(toastTimer)
   }
@@ -5219,9 +5314,9 @@ onBeforeUnmount(() => {
 
           <div v-else-if="routeMode === 'public-media' && sharedMedia" class="public-single-view">
             <img
-              v-if="sharedMedia.mimeType.startsWith('image/')"
+              v-if="isLikelyImageFile(sharedMedia) && publicPreviewSrc(sharedMedia)"
               class="public-single-image"
-              :src="publicFileUrl(sharedMedia.id)"
+              :src="publicPreviewSrc(sharedMedia)"
               :alt="sharedMedia.filename"
             />
             <div v-else class="public-single-fallback">
@@ -5236,9 +5331,9 @@ onBeforeUnmount(() => {
               class="photo-card"
             >
               <img
-                v-if="item.mimeType.startsWith('image/')"
+                v-if="isLikelyImageFile(item) && publicPreviewSrc(item)"
                 class="photo-img"
-                :src="publicFileUrl(item.id)"
+                :src="publicPreviewSrc(item)"
                 :alt="item.filename"
                 loading="lazy"
               />
