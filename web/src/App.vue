@@ -269,7 +269,12 @@ let editorHistoryPushTimer: ReturnType<typeof setTimeout> | null = null
 const mediaPageSize = 120
 const thumbQueue = {
   active: 0,
-  limit: 6,
+  limit: 4,
+  waiters: [] as Array<() => void>,
+}
+const heicConversionQueue = {
+  active: 0,
+  limit: 1,
   waiters: [] as Array<() => void>,
 }
 
@@ -1136,7 +1141,11 @@ async function loadSharedPreview(item: MediaItem) {
     const response = await fetch(url)
     if (!response.ok) throw new Error('Cannot load shared image')
     const blob = await response.blob()
-    const previewBlob = await prepareBrowserImageBlob(blob, item)
+    const previewBlob = await prepareBrowserImageBlob(
+      blob,
+      item,
+      routeMode.value === 'public-album' ? { maxWidth: 960 } : undefined,
+    )
     const objectUrl = URL.createObjectURL(previewBlob)
     const previous = sharedPreviewUrls.value[item.id]
     if (previous?.startsWith('blob:')) {
@@ -2318,31 +2327,78 @@ async function decodeImageBlobIfSupported(blob: Blob) {
   }
 }
 
-async function convertHeicBlobToJpeg(blob: Blob) {
-  const { default: heic2any } = await import('heic2any')
-  const converted = await heic2any({
-    blob,
-    toType: 'image/jpeg',
-    quality: 0.9,
-  })
-  const convertedBlob = Array.isArray(converted) ? converted[0] : converted
-  if (!convertedBlob) {
-    throw new Error('HEIC conversion produced no image')
+async function acquireHeicConversionSlot() {
+  if (heicConversionQueue.active >= heicConversionQueue.limit) {
+    await new Promise<void>((resolve) => {
+      heicConversionQueue.waiters.push(resolve)
+    })
   }
-  return convertedBlob
+  heicConversionQueue.active += 1
 }
 
-async function prepareBrowserImageBlob(blob: Blob, item: MediaItem) {
+function releaseHeicConversionSlot() {
+  heicConversionQueue.active = Math.max(0, heicConversionQueue.active - 1)
+  const next = heicConversionQueue.waiters.shift()
+  if (next) next()
+}
+
+async function convertHeicBlobToJpeg(blob: Blob) {
+  await acquireHeicConversionSlot()
   try {
-    await decodeImageBlobIfSupported(blob)
-    return blob
+    const { default: heic2any } = await import('heic2any')
+    const converted = await heic2any({
+      blob,
+      toType: 'image/jpeg',
+      quality: 0.86,
+    })
+    const convertedBlob = Array.isArray(converted) ? converted[0] : converted
+    if (!convertedBlob) {
+      throw new Error('HEIC conversion produced no image')
+    }
+    return convertedBlob
+  } finally {
+    releaseHeicConversionSlot()
+  }
+}
+
+async function downscaleImageBlob(blob: Blob, maxWidth: number) {
+  if (typeof window === 'undefined' || !('createImageBitmap' in window) || maxWidth <= 0) return blob
+
+  const imageBitmap = await createImageBitmap(blob)
+  try {
+    if (imageBitmap.width <= maxWidth) return blob
+    const scale = maxWidth / imageBitmap.width
+    const width = Math.max(1, Math.round(imageBitmap.width * scale))
+    const height = Math.max(1, Math.round(imageBitmap.height * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext('2d')
+    if (!context) return blob
+    context.drawImage(imageBitmap, 0, 0, width, height)
+    const downscaled = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/jpeg', 0.84)
+    })
+    return downscaled || blob
+  } finally {
+    imageBitmap.close()
+  }
+}
+
+async function prepareBrowserImageBlob(blob: Blob, item: MediaItem, options?: { maxWidth?: number }) {
+  let browserBlob = blob
+  try {
+    await decodeImageBlobIfSupported(browserBlob)
   } catch (error) {
     if (!isHeicFile(item)) throw error
+    browserBlob = await convertHeicBlobToJpeg(browserBlob)
+    await decodeImageBlobIfSupported(browserBlob)
   }
 
-  const converted = await convertHeicBlobToJpeg(blob)
-  await decodeImageBlobIfSupported(converted)
-  return converted
+  if (options?.maxWidth) {
+    return downscaleImageBlob(browserBlob, options.maxWidth)
+  }
+  return browserBlob
 }
 
 function clearThumb(mediaId: string) {
@@ -2448,6 +2504,12 @@ async function loadThumb(mediaId: string) {
   }
 
   const task = (async () => {
+    const targetBase = isMobileViewport.value ? 280 : 420
+    const width = Math.max(
+      180,
+      Math.min(960, Math.round(targetBase * Math.max(1, Math.min(2, window.devicePixelRatio || 1)))),
+    )
+
     if (thumbQueue.active >= thumbQueue.limit) {
       await new Promise<void>((resolve) => {
         thumbQueue.waiters.push(resolve)
@@ -2457,23 +2519,18 @@ async function loadThumb(mediaId: string) {
     thumbQueue.active += 1
 
     try {
-      const targetBase = isMobileViewport.value ? 280 : 420
-      const width = Math.max(
-        180,
-        Math.min(960, Math.round(targetBase * Math.max(1, Math.min(2, window.devicePixelRatio || 1)))),
-      )
       const mediaItem = media.value.find((item) => item.id === mediaId)
       const version = mediaItem?.updatedAt ? Date.parse(mediaItem.updatedAt) : undefined
       const blob = await api.fetchThumbBlob(token.value as string, mediaId, width, Number.isFinite(version) ? version : undefined)
       if (!mediaItem) throw new Error('Media item not found')
-      const previewBlob = await prepareBrowserImageBlob(blob, mediaItem)
+      const previewBlob = await prepareBrowserImageBlob(blob, mediaItem, { maxWidth: width })
       queueThumbUpdate(mediaId, URL.createObjectURL(previewBlob))
     } catch {
       try {
         const blob = await api.fetchFileBlob(token.value as string, mediaId)
         const mediaItem = media.value.find((item) => item.id === mediaId)
         if (!mediaItem) throw new Error('Media item not found')
-        const previewBlob = await prepareBrowserImageBlob(blob, mediaItem)
+        const previewBlob = await prepareBrowserImageBlob(blob, mediaItem, { maxWidth: width })
         queueThumbUpdate(mediaId, URL.createObjectURL(previewBlob))
       } catch {
         queueThumbUpdate(mediaId, '')
@@ -2497,12 +2554,13 @@ async function loadThumb(mediaId: string) {
 async function loadThumbsProgressively(items: MediaItem[]) {
   const runId = ++progressiveThumbLoadRunId
   const ids = items
+    .filter((item) => !isHeicFile(item))
     .map((item) => item.id)
     .filter((id) => !thumbs.value[id])
 
   if (ids.length === 0) return
 
-  const batchSize = 24
+  const batchSize = 16
   for (let index = 0; index < ids.length; index += batchSize) {
     if (runId !== progressiveThumbLoadRunId) return
     const batch = ids.slice(index, index + batchSize)
@@ -2585,25 +2643,28 @@ async function loadThumbsNearViewport() {
       return rect.bottom >= viewportTop && rect.top <= viewportBottom
     })
     .map((card) => card.dataset.mediaId as string)
-    .slice(0, 48)
+    .slice(0, 18)
 
   if (visibleIds.length === 0) return
 
   const indexById = new Map(filteredMedia.value.map((item, index) => [item.id, index]))
+  const itemById = new Map(filteredMedia.value.map((item) => [item.id, item]))
   const prioritized = new Set<string>(visibleIds)
-  for (const id of visibleIds.slice(0, 24)) {
+  for (const id of visibleIds.slice(0, 12)) {
+    const item = itemById.get(id)
+    if (!item || isHeicFile(item)) continue
     const index = indexById.get(id)
     if (index === undefined) continue
-    for (let offset = -4; offset <= 4; offset += 1) {
+    for (let offset = -2; offset <= 2; offset += 1) {
       if (offset === 0) continue
       const neighbor = filteredMedia.value[index + offset]
-      if (neighbor && !thumbs.value[neighbor.id]) {
+      if (neighbor && !thumbs.value[neighbor.id] && !isHeicFile(neighbor)) {
         prioritized.add(neighbor.id)
       }
     }
   }
 
-  await Promise.all(Array.from(prioritized).map((id) => loadThumb(id)))
+  await Promise.all(Array.from(prioritized).slice(0, 24).map((id) => loadThumb(id)))
 }
 
 function updateVirtualWindowState() {
@@ -2635,7 +2696,6 @@ function scheduleNearViewportThumbLoad() {
     void (async () => {
       try {
         await loadThumbsNearViewport()
-        await loadThumbsProgressively(renderedMedia.value)
       } finally {
         nearViewportThumbLoadInFlight = false
       }
