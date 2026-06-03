@@ -16,6 +16,8 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { ShareAccessMode, ShareResourceType } from '@prisma/client';
+import sharp from 'sharp';
+import { extname } from 'path';
 
 const r2AccountId = process.env.R2_ACCOUNT_ID || '';
 const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID || '';
@@ -24,6 +26,26 @@ const r2BucketName = process.env.R2_BUCKET_NAME || '';
 const r2Endpoint =
   process.env.R2_ENDPOINT ||
   (r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : '');
+
+function isHeicFile(mimeType: string, filename: string): boolean {
+  const normalizedMime = mimeType.toLowerCase();
+  if (normalizedMime.includes('heic') || normalizedMime.includes('heif')) return true;
+  const ext = extname(filename).replace(/^\./, '').toLowerCase();
+  return ext === 'heic' || ext === 'heif';
+}
+
+async function renderBrowserSafeImageBuffer(sourceBuffer: Buffer, mimeType: string, filename: string) {
+  if (!isHeicFile(mimeType, filename)) {
+    return { body: sourceBuffer, contentType: mimeType || 'application/octet-stream' };
+  }
+
+  const body = await sharp(sourceBuffer, { failOn: 'none' })
+    .rotate()
+    .jpeg({ quality: 92, mozjpeg: true })
+    .toBuffer();
+
+  return { body, contentType: 'image/jpeg' };
+}
 
 @Controller('public')
 export class PublicShareController {
@@ -153,7 +175,7 @@ export class PublicShareController {
 
     const media = await this.prisma.media.findUnique({
       where: { id: resolved.access.resourceId },
-      select: { ownerId: true, filePath: true, mimeType: true },
+      select: { ownerId: true, filePath: true, filename: true, mimeType: true },
     });
 
     if (!media) {
@@ -170,9 +192,15 @@ export class PublicShareController {
       if (!object.Body) {
         return response.status(404).json({ error: 'File not found in storage' });
       }
-      const body = await this.readBodyToBuffer(object.Body);
-      response.setHeader('Content-Type', object.ContentType || media.mimeType || 'application/octet-stream');
-      return response.send(body);
+      const sourceBody = await this.readBodyToBuffer(object.Body);
+      const rendered = await renderBrowserSafeImageBuffer(
+        sourceBody,
+        object.ContentType || media.mimeType || '',
+        media.filename || media.filePath,
+      );
+      response.setHeader('Content-Type', rendered.contentType);
+      response.setHeader('Content-Length', String(rendered.body.byteLength));
+      return response.send(rendered.body);
     } catch {
       return response.status(404).json({ error: 'File not found in storage' });
     }
@@ -260,6 +288,7 @@ export class PublicShareController {
       select: {
         ownerId: true,
         filePath: true,
+        filename: true,
         mimeType: true,
       },
     });
@@ -278,9 +307,15 @@ export class PublicShareController {
       if (!object.Body) {
         return response.status(404).json({ error: 'File not found in storage' });
       }
-      const body = await this.readBodyToBuffer(object.Body);
-      response.setHeader('Content-Type', object.ContentType || media.mimeType || 'application/octet-stream');
-      return response.send(body);
+      const sourceBody = await this.readBodyToBuffer(object.Body);
+      const rendered = await renderBrowserSafeImageBuffer(
+        sourceBody,
+        object.ContentType || media.mimeType || '',
+        media.filename || media.filePath,
+      );
+      response.setHeader('Content-Type', rendered.contentType);
+      response.setHeader('Content-Length', String(rendered.body.byteLength));
+      return response.send(rendered.body);
     } catch {
       return response.status(404).json({ error: 'File not found in storage' });
     }

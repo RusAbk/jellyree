@@ -93,6 +93,26 @@ function isVideoFile(mimeType: string, filename: string): boolean {
   return VIDEO_EXTENSIONS.has(ext);
 }
 
+function isHeicFile(mimeType: string, filename: string): boolean {
+  const normalizedMime = mimeType.toLowerCase();
+  if (normalizedMime.includes('heic') || normalizedMime.includes('heif')) return true;
+  const ext = extname(filename).replace(/^\./, '').toLowerCase();
+  return ext === 'heic' || ext === 'heif';
+}
+
+async function renderBrowserSafeImageBuffer(sourceBuffer: Buffer, mimeType: string, filename: string) {
+  if (!isHeicFile(mimeType, filename)) {
+    return { body: sourceBuffer, contentType: mimeType || 'application/octet-stream' };
+  }
+
+  const body = await sharp(sourceBuffer, { failOn: 'none' })
+    .rotate()
+    .jpeg({ quality: 92, mozjpeg: true })
+    .toBuffer();
+
+  return { body, contentType: 'image/jpeg' };
+}
+
 function toNumber(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -2123,12 +2143,19 @@ export class MediaController {
         return response.status(404).json({ error: 'File not found in storage' });
       }
 
-      const body = await this.readBodyToBuffer(object.Body);
-      response.setHeader('Content-Type', object.ContentType || media.mimeType || 'application/octet-stream');
-      if (typeof object.ContentLength === 'number') {
+      const sourceBody = await this.readBodyToBuffer(object.Body);
+      const rendered = await renderBrowserSafeImageBuffer(
+        sourceBody,
+        object.ContentType || media.mimeType || '',
+        media.filename || media.filePath,
+      );
+      response.setHeader('Content-Type', rendered.contentType);
+      if (rendered.body.byteLength !== sourceBody.byteLength || typeof object.ContentLength !== 'number') {
+        response.setHeader('Content-Length', String(rendered.body.byteLength));
+      } else {
         response.setHeader('Content-Length', String(object.ContentLength));
       }
-      return response.send(body);
+      return response.send(rendered.body);
     } catch {
       return response.status(404).json({ error: 'File not found in storage' });
     }

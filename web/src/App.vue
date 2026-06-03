@@ -2203,7 +2203,7 @@ function canPreviewInBrowser(item: MediaItem) {
   if (isLikelyVideoFile(item)) return Boolean(thumbs.value[item.id])
   if (!isLikelyImageFile(item)) return false
   if (isHeicFile(item)) {
-    return Boolean(thumbs.value[item.id])
+    return Boolean(thumbs.value[item.id] || lightboxFullImages.value[item.id])
   }
   return true
 }
@@ -2251,7 +2251,7 @@ async function decodeImageBlobIfSupported(blob: Blob) {
     const imageBitmap = await createImageBitmap(blob)
     imageBitmap.close()
   } catch {
-    return
+    throw new Error('Image blob is not browser-decodable')
   }
 }
 
@@ -2301,11 +2301,6 @@ async function loadActiveLightboxFullImage() {
   const mediaId = item.id
 
   if (lightboxFullImages.value[mediaId]) return
-
-  if (isHeicFile(item)) {
-    clearLightboxFullImage(mediaId)
-    return
-  }
 
   // Keep network focused on the currently visible frame.
   for (const [id, controller] of fullImageAbortControllers.entries()) {
