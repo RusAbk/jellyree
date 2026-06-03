@@ -16,8 +16,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { ShareAccessMode, ShareResourceType } from '@prisma/client';
-import sharp from 'sharp';
-import { extname } from 'path';
+import { renderBrowserSafeImageBuffer } from './heic';
 
 const r2AccountId = process.env.R2_ACCOUNT_ID || '';
 const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID || '';
@@ -26,30 +25,6 @@ const r2BucketName = process.env.R2_BUCKET_NAME || '';
 const r2Endpoint =
   process.env.R2_ENDPOINT ||
   (r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : '');
-
-function isHeicFile(mimeType: string, filename: string): boolean {
-  const normalizedMime = mimeType.toLowerCase();
-  if (normalizedMime.includes('heic') || normalizedMime.includes('heif')) return true;
-  const ext = extname(filename).replace(/^\./, '').toLowerCase();
-  return ext === 'heic' || ext === 'heif';
-}
-
-async function renderBrowserSafeImageBuffer(sourceBuffer: Buffer, mimeType: string, filename: string) {
-  if (!isHeicFile(mimeType, filename)) {
-    return { body: sourceBuffer, contentType: mimeType || 'application/octet-stream' };
-  }
-
-  try {
-    const body = await sharp(sourceBuffer, { failOn: 'none' })
-      .rotate()
-      .jpeg({ quality: 92, mozjpeg: true })
-      .toBuffer();
-
-    return { body, contentType: 'image/jpeg' };
-  } catch {
-    return { body: sourceBuffer, contentType: mimeType || 'application/octet-stream' };
-  }
-}
 
 @Controller('public')
 export class PublicShareController {

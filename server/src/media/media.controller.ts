@@ -43,6 +43,7 @@ import {
   getVideoUploadSessionStore,
   type VideoUploadSessionData,
 } from './video-upload-session-store';
+import { isHeicFile, normalizeImageInputBuffer, renderBrowserSafeImageBuffer } from './heic';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { tmpdir } from 'os';
@@ -91,30 +92,6 @@ function isVideoFile(mimeType: string, filename: string): boolean {
   if (mimeType.startsWith('video/')) return true;
   const ext = extname(filename).replace(/^\./, '').toLowerCase();
   return VIDEO_EXTENSIONS.has(ext);
-}
-
-function isHeicFile(mimeType: string, filename: string): boolean {
-  const normalizedMime = mimeType.toLowerCase();
-  if (normalizedMime.includes('heic') || normalizedMime.includes('heif')) return true;
-  const ext = extname(filename).replace(/^\./, '').toLowerCase();
-  return ext === 'heic' || ext === 'heif';
-}
-
-async function renderBrowserSafeImageBuffer(sourceBuffer: Buffer, mimeType: string, filename: string) {
-  if (!isHeicFile(mimeType, filename)) {
-    return { body: sourceBuffer, contentType: mimeType || 'application/octet-stream' };
-  }
-
-  try {
-    const body = await sharp(sourceBuffer, { failOn: 'none' })
-      .rotate()
-      .jpeg({ quality: 92, mozjpeg: true })
-      .toBuffer();
-
-    return { body, contentType: 'image/jpeg' };
-  } catch {
-    return { body: sourceBuffer, contentType: mimeType || 'application/octet-stream' };
-  }
 }
 
 function toNumber(value: unknown, fallback: number) {
@@ -572,6 +549,7 @@ export class MediaController {
       } else {
         sourceBuffer = await this.getObjectBufferFromR2(ownerId, filePath);
       }
+      sourceBuffer = await normalizeImageInputBuffer(sourceBuffer, mimeType, filePath, 0.9);
       const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
         .rotate()
         .resize({ width: thumbWidth, fit: 'inside', withoutEnlargement: true })
@@ -699,7 +677,10 @@ export class MediaController {
     const filePath = resolve(tempUploadRoot, fileName);
 
     try {
-      const imageMeta = await sharp(filePath, { failOn: 'none' }).metadata();
+      const metadataInput = isHeicFile(mimeType, fileName)
+        ? await normalizeImageInputBuffer(await readFile(filePath), mimeType, fileName, 0.9)
+        : filePath;
+      const imageMeta = await sharp(metadataInput, { failOn: 'none' }).metadata();
 
       const baseMeta: UploadMetadata = {
         ...defaults,
@@ -2107,6 +2088,7 @@ export class MediaController {
           } else {
             sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
           }
+          sourceBuffer = await normalizeImageInputBuffer(sourceBuffer, media.mimeType, media.filePath, 0.9);
           const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
             .rotate()
             .resize({ width: thumbWidth, fit: 'inside', withoutEnlargement: true })
@@ -2381,6 +2363,7 @@ export class MediaController {
       } else {
         sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
       }
+      sourceBuffer = await normalizeImageInputBuffer(sourceBuffer, media.mimeType, media.filePath, 0.9);
       const thumbBuffer = await sharp(sourceBuffer, { failOn: 'none' })
         .rotate()
         .resize({
@@ -2875,12 +2858,13 @@ export class MediaController {
       return { error: 'Not found' };
     }
 
-    if (!source.mimeType.toLowerCase().startsWith('image/')) {
+    if (!source.mimeType.toLowerCase().startsWith('image/') && !isHeicFile(source.mimeType, source.filename || source.filePath)) {
       throw new BadRequestException('Only image files can be converted to JPG');
     }
 
     const sourceBody = await this.getObjectBufferFromR2(req.user!.id, source.filePath);
-    const convertedBuffer = await sharp(sourceBody, { failOn: 'none' })
+    const normalizedSourceBody = await normalizeImageInputBuffer(sourceBody, source.mimeType, source.filename || source.filePath, 0.98);
+    const convertedBuffer = await sharp(normalizedSourceBody, { failOn: 'none' })
       .rotate()
       // Preserve source ICC profile to avoid color shifts (e.g. wide-gamut photos looking faded).
       .keepIccProfile()
@@ -2962,6 +2946,130 @@ export class MediaController {
     }
   }
 
+  @Post(':id/convert-jpg-upload')
+  @UseInterceptors(
+    FilesInterceptor('file', 1, {
+      storage: diskStorage({
+        destination: (_req, _file, cb) => {
+          cb(null, tempUploadRoot);
+        },
+        filename: (_req, file, cb) => {
+          cb(null, `${randomUUID()}${extname(file.originalname) || '.jpg'}`);
+        },
+      }),
+    }),
+  )
+  async convertToJpgFromUpload(
+    @Req() req: RequestWithUser,
+    @Param('id') id: string,
+    @UploadedFiles() files: Express.Multer.File[],
+  ) {
+    const uploaded = files?.[0];
+    if (!uploaded) {
+      throw new BadRequestException('No converted JPG uploaded');
+    }
+
+    const tempPath = resolve(tempUploadRoot, uploaded.filename);
+
+    try {
+      if (!uploaded.mimetype.toLowerCase().includes('jpeg') && !uploaded.originalname.toLowerCase().match(/\.jpe?g$/)) {
+        throw new BadRequestException('Only JPG uploads are allowed');
+      }
+
+      const source = await this.prisma.media.findFirst({
+        where: { id, ownerId: req.user!.id },
+        include: {
+          mediaTags: true,
+          albumMedia: true,
+        },
+      });
+
+      if (!source) {
+        return { error: 'Not found' };
+      }
+
+      if (!source.mimeType.toLowerCase().startsWith('image/') && !isHeicFile(source.mimeType, source.filename)) {
+        throw new BadRequestException('Only image files can be converted to JPG');
+      }
+
+      const convertedBuffer = await readFile(tempPath);
+      const convertedMeta = await sharp(convertedBuffer, { failOn: 'none' }).metadata();
+      if (convertedMeta.format !== 'jpeg') {
+        throw new BadRequestException('Converted upload must be a JPG image');
+      }
+
+      await this.ensureCanCreateFiles(req.user!.id, 1, convertedBuffer.byteLength);
+      const convertedStoragePath = `${randomUUID()}.jpg`;
+      const convertedFilename = this.buildJpegFilename(source.filename);
+
+      await this.uploadBufferToR2(req.user!.id, convertedStoragePath, 'image/jpeg', convertedBuffer);
+
+      try {
+        const created = await this.prisma.$transaction(async (tx) => {
+          const inserted = await tx.media.create({
+            data: {
+              ownerId: source.ownerId,
+              filePath: convertedStoragePath,
+              filename: convertedFilename,
+              relativePath: source.relativePath,
+              isFavorite: source.isFavorite,
+              mimeType: 'image/jpeg',
+              sizeBytes: convertedBuffer.byteLength,
+              width: convertedMeta.width || source.width,
+              height: convertedMeta.height || source.height,
+              adjustments: Prisma.JsonNull,
+              capturedAt: source.capturedAt,
+              metadataCreatedAt: source.metadataCreatedAt,
+              metadataModifiedAt: source.metadataModifiedAt,
+              latitude: source.latitude,
+              longitude: source.longitude,
+            },
+            include: {
+              mediaTags: { include: { tag: true } },
+              albumMedia: true,
+            },
+          });
+
+          const sourceAlbumId = source.albumMedia[0]?.albumId;
+          if (sourceAlbumId) {
+            await tx.albumMedia.create({
+              data: {
+                albumId: sourceAlbumId,
+                mediaId: inserted.id,
+              },
+            });
+          }
+
+          if (source.mediaTags.length > 0) {
+            await tx.mediaTag.createMany({
+              data: source.mediaTags.map((entry) => ({
+                mediaId: inserted.id,
+                tagId: entry.tagId,
+              })),
+            });
+          }
+
+          return tx.media.findUnique({
+            where: { id: inserted.id },
+            include: {
+              mediaTags: { include: { tag: true } },
+              albumMedia: true,
+            },
+          });
+        });
+
+        return created;
+      } catch (error) {
+        await this.deleteObjectFromR2(req.user!.id, convertedStoragePath).catch(() => {
+          return;
+        });
+        throw error;
+      }
+    } finally {
+      await unlink(tempPath).catch(() => {});
+    }
+  }
+
   @Post(':id/preview-render')
   async previewRender(
     @Req() req: RequestWithUser,
@@ -2978,13 +3086,18 @@ export class MediaController {
       return response.status(404).json({ error: 'Not found' });
     }
 
-    if (!media.mimeType.toLowerCase().startsWith('image/')) {
+    if (!media.mimeType.toLowerCase().startsWith('image/') && !isHeicFile(media.mimeType, media.filePath)) {
       throw new BadRequestException('Only image files can be edited');
     }
 
     const normalized = normalizeEditorAdjustments(body.adjustments);
     const normalizedDeformation = normalizeEditorDeformation(body.deformation);
-    const sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+    const sourceBuffer = await normalizeImageInputBuffer(
+      await this.getObjectBufferFromR2(media.ownerId, media.filePath),
+      media.mimeType,
+      media.filePath,
+      0.94,
+    );
     const previewBuffer = await this.renderEditedImageBuffer(sourceBuffer, normalized, {
       preview: true,
       deformation: normalizedDeformation,
@@ -3012,7 +3125,7 @@ export class MediaController {
       return { error: 'Not found' };
     }
 
-    if (!media.mimeType.toLowerCase().startsWith('image/')) {
+    if (!media.mimeType.toLowerCase().startsWith('image/') && !isHeicFile(media.mimeType, media.filePath)) {
       throw new BadRequestException('Only image files can be edited');
     }
     const normalized = normalizeEditorAdjustments(body.adjustments);
@@ -3020,7 +3133,12 @@ export class MediaController {
 
     await this.clearMediaRevisions(media.id, media.ownerId);
 
-    const sourceBuffer = await this.getObjectBufferFromR2(media.ownerId, media.filePath);
+    const sourceBuffer = await normalizeImageInputBuffer(
+      await this.getObjectBufferFromR2(media.ownerId, media.filePath),
+      media.mimeType,
+      media.filePath,
+      0.94,
+    );
     const outputBuffer = await this.renderEditedImageBuffer(sourceBuffer, normalized, {
       deformation: normalizedDeformation,
     });

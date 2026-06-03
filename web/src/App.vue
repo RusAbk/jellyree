@@ -2184,6 +2184,12 @@ function contextConvertMediaToJpg() {
   void convertMediaToJpg(item.id)
 }
 
+function canConvertMediaToJpg(item?: MediaItem | null) {
+  if (!item) return false
+  if (!isLikelyImageFile(item)) return false
+  return !item.mimeType.toLowerCase().includes('jpeg') && getFileExtension(item.filename) !== 'jpg' && getFileExtension(item.filename) !== 'jpeg'
+}
+
 async function downloadSelectedAsZip() {
   if (!token.value || selectedMediaIds.value.length < 2) return
 
@@ -2342,14 +2348,14 @@ function releaseHeicConversionSlot() {
   if (next) next()
 }
 
-async function convertHeicBlobToJpeg(blob: Blob) {
+async function convertHeicBlobToJpeg(blob: Blob, quality = 0.86) {
   await acquireHeicConversionSlot()
   try {
     const { default: heic2any } = await import('heic2any')
     const converted = await heic2any({
       blob,
       toType: 'image/jpeg',
-      quality: 0.86,
+      quality,
     })
     const convertedBlob = Array.isArray(converted) ? converted[0] : converted
     if (!convertedBlob) {
@@ -4441,7 +4447,25 @@ async function duplicateMedia(mediaId: string) {
 async function convertMediaToJpg(mediaId: string) {
   if (!token.value) return
   try {
-    const converted = await api.convertMediaToJpg(authHeaders(), mediaId)
+    const source = media.value.find((item) => item.id === mediaId)
+    if (!source) throw new Error('Media item not found')
+
+    let converted: MediaItem
+    try {
+      converted = await api.convertMediaToJpg(authHeaders(), mediaId)
+    } catch (error) {
+      if (!isHeicFile(source)) throw error
+      const downloaded = await api.downloadMediaBlob(authHeaders(), mediaId)
+      const convertedBlob = await convertHeicBlobToJpeg(downloaded.blob, 0.95)
+      const filenameParts = splitFilenameParts(source.filename)
+      const filename = `${filenameParts.baseName || 'converted'}.jpg`
+      const convertedFile = new File([convertedBlob], filename, {
+        type: 'image/jpeg',
+        lastModified: Date.now(),
+      })
+      converted = await api.uploadConvertedJpg(authHeaders(), mediaId, convertedFile)
+    }
+
     applyAccountStatsDelta({ fileCount: 1, totalSizeBytes: converted.sizeBytes })
     refreshAccountSnapshotInBackground()
     showToast('JPG copy created')
@@ -6392,7 +6416,7 @@ onBeforeUnmount(() => {
         <button @click="contextOpenMediaDetails">Details</button>
         <button @click="contextEditMedia">Edit photo</button>
         <button @click="contextCopyMedia">Create copy</button>
-        <button v-if="mediaFromContext()?.mimeType?.startsWith('image/')" @click="contextConvertMediaToJpg">Convert to JPG</button>
+        <button v-if="canConvertMediaToJpg(mediaFromContext())" @click="contextConvertMediaToJpg">Convert to JPG</button>
         <button @click="contextShareMedia">Public access settings…</button>
         <button v-if="mediaContextMenu.mediaId && isMediaShareEnabled(mediaContextMenu.mediaId)" @click="contextCopyMediaShareLink">Copy public link</button>
         <button @click="contextDownloadMedia">Download</button>

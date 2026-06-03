@@ -540,6 +540,19 @@ export const api = {
       },
       token,
     ),
+  uploadConvertedJpg: (token: string, mediaId: string, file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    return request<MediaItem>(
+      `/media/${mediaId}/convert-jpg-upload`,
+      {
+        method: 'POST',
+        body: formData,
+      },
+      token,
+    )
+  },
   bulkTag: (token: string, mediaIds: string[], tags: string[]) =>
     request(
       '/media/bulk/tag',
